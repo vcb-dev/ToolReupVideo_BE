@@ -1,0 +1,14 @@
+# Dependency directories
+node_modules/
+
+# Build outputs
+dist/
+
+# Local env files
+.env
+.env.local
+.env.production
+.env.development
+
+# OS files
+.DS_Store
