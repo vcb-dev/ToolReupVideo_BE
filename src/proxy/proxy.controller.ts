@@ -23,8 +23,14 @@ export class ProxyController {
 
   @Post('ingest')
   @HttpCode(HttpStatus.OK)
-  async ingest(@Body() body: { user: string; max?: number }) {
-    return this.proxyService.ingest(body.user, body.max ?? 30);
+  async ingest(
+    @Body() body: { user: string; max?: number; platform?: string },
+  ) {
+    return this.proxyService.ingest(
+      body.user,
+      body.max ?? 30,
+      body.platform ?? 'douyin',
+    );
   }
 
   @Post('select')

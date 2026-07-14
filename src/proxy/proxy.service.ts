@@ -23,9 +23,13 @@ export class ProxyService {
     }
   }
 
-  async ingest(user: string, max: number) {
+  async ingest(user: string, max: number, platform = 'douyin') {
     try {
-      const response = await axios.post(`${this.aiUrl}/api/ingest`, { user, max });
+      const response = await axios.post(`${this.aiUrl}/api/ingest`, {
+        user,
+        max,
+        platform,
+      });
       return response.data;
     } catch (error) {
       this.logger.error(`Error calling ingest on AI Service: ${error.message}`);

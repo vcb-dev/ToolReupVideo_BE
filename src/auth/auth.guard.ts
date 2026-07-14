@@ -23,6 +23,8 @@ export class SupabaseAuthGuard implements CanActivate {
 
     // Xác minh với Supabase; ném 401 nếu token sai/hết hạn.
     req.user = await this.authService.getUser(token);
+    // Giữ lại token để tầng data gọi Supabase REST dưới danh nghĩa user (RLS).
+    req.accessToken = token;
     return true;
   }
 }
