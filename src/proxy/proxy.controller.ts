@@ -1,6 +1,17 @@
-import { Controller, Get, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  HttpCode,
+  HttpStatus,
+  UseGuards,
+} from '@nestjs/common';
 import { ProxyService } from './proxy.service';
+import { SupabaseAuthGuard } from '../auth/auth.guard';
 
+// Toàn bộ route xử lý video yêu cầu đăng nhập
+@UseGuards(SupabaseAuthGuard)
 @Controller('api')
 export class ProxyController {
   constructor(private readonly proxyService: ProxyService) {}
