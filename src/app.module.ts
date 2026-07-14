@@ -4,6 +4,7 @@ import { ProxyModule } from './proxy/proxy.module';
 import { AuthModule } from './auth/auth.module';
 import { DataModule } from './data/data.module';
 import { CrawlModule } from './crawl/crawl.module';
+import { PublishModule } from './publish/publish.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { CrawlModule } from './crawl/crawl.module';
     ProxyModule,
     DataModule,
     CrawlModule,
+    PublishModule,
   ],
 })
 export class AppModule {}

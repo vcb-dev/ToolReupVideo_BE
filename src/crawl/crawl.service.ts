@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import axios from 'axios';
 import { SupabaseRestService } from '../data/supabase-rest.service';
-import { SupabaseAdminService } from './supabase-admin.service';
+import { SupabaseAdminService } from '../data/supabase-admin.service';
 
 const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
 const DEFAULT_MAX = Number(process.env.CRAWL_MAX_PER_CHANNEL || 10);

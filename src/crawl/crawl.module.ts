@@ -1,13 +1,12 @@
 import { Module } from '@nestjs/common';
 import { CrawlController } from './crawl.controller';
 import { CrawlService } from './crawl.service';
-import { SupabaseAdminService } from './supabase-admin.service';
-import { SupabaseRestService } from '../data/supabase-rest.service';
 import { AuthModule } from '../auth/auth.module';
+import { DataModule } from '../data/data.module';
 
 @Module({
-  imports: [AuthModule], // dùng chung SupabaseAuthGuard
+  imports: [AuthModule, DataModule], // guard + SupabaseRest/Admin dùng chung
   controllers: [CrawlController],
-  providers: [CrawlService, SupabaseAdminService, SupabaseRestService],
+  providers: [CrawlService],
 })
 export class CrawlModule {}

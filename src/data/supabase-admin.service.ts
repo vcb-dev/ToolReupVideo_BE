@@ -62,4 +62,23 @@ export class SupabaseAdminService {
       { headers: this.headers() },
     );
   }
+
+  /** SELECT generic (bỏ qua RLS) — dùng cho cron lịch đăng. */
+  async select(table: string, query: string): Promise<any[]> {
+    const res = await axios.get(`${this.base()}/${table}?${query}`, {
+      headers: this.headers(),
+    });
+    return res.data || [];
+  }
+
+  /** UPDATE generic theo id (bỏ qua RLS). */
+  async patch(
+    table: string,
+    id: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
+    await axios.patch(`${this.base()}/${table}?id=eq.${id}`, body, {
+      headers: this.headers(),
+    });
+  }
 }
