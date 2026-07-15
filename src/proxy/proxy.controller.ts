@@ -33,6 +33,26 @@ export class ProxyController {
     );
   }
 
+  // Quét preview (chỉ metadata, không tải)
+  @Post('scan')
+  @HttpCode(HttpStatus.OK)
+  async scan(
+    @Body() body: { user: string; max?: number; platform?: string },
+  ) {
+    return this.proxyService.scan(
+      body.user,
+      body.max ?? 30,
+      body.platform ?? 'douyin',
+    );
+  }
+
+  // Lưu các video đã chọn (tải + upload)
+  @Post('save')
+  @HttpCode(HttpStatus.OK)
+  async save(@Body() body: { platform?: string; videos: any[] }) {
+    return this.proxyService.save(body.platform ?? 'douyin', body.videos ?? []);
+  }
+
   @Post('select')
   @HttpCode(HttpStatus.OK)
   async select(@Body() body: { aweme_id: string; selected: boolean }) {

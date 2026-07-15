@@ -7,6 +7,7 @@ import { DataModule } from './data/data.module';
 import { CrawlModule } from './crawl/crawl.module';
 import { PublishModule } from './publish/publish.module';
 import { StatsModule } from './stats/stats.module';
+import { StorageModule } from './storage/storage.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { StatsModule } from './stats/stats.module';
     CrawlModule,
     PublishModule,
     StatsModule,
+    StorageModule,
   ],
 })
 export class AppModule {}

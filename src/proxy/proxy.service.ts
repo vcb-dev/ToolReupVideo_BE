@@ -40,6 +40,43 @@ export class ProxyService {
     }
   }
 
+  async scan(user: string, max: number, platform = 'douyin') {
+    try {
+      const response = await axios.post(`${this.aiUrl}/api/scan`, {
+        user,
+        max,
+        platform,
+      });
+      return response.data;
+    } catch (error) {
+      this.logger.error(`Error calling scan on AI Service: ${error.message}`);
+      return {
+        ok: false,
+        error:
+          error.response?.data?.error ||
+          `Không thể kết nối dịch vụ AI: ${error.message}`,
+      };
+    }
+  }
+
+  async save(platform: string, videos: any[]) {
+    try {
+      const response = await axios.post(`${this.aiUrl}/api/save`, {
+        platform,
+        videos,
+      });
+      return response.data;
+    } catch (error) {
+      this.logger.error(`Error calling save on AI Service: ${error.message}`);
+      return {
+        ok: false,
+        error:
+          error.response?.data?.error ||
+          `Không thể kết nối dịch vụ AI: ${error.message}`,
+      };
+    }
+  }
+
   async select(aweme_id: string, selected: boolean) {
     try {
       const response = await axios.post(`${this.aiUrl}/api/select`, { aweme_id, selected });
