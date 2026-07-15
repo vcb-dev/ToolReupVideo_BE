@@ -23,6 +23,7 @@ const RESOURCE_TABLE: Record<string, string> = {
   schedules: 'schedules',
   'source-videos': 'source_videos',
   'processed-videos': 'processed_videos',
+  metrics: 'metrics',
 };
 
 /**
