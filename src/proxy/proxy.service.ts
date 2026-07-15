@@ -53,9 +53,18 @@ export class ProxyService {
     }
   }
 
-  async process(platforms: string[], upload: boolean) {
+  async process(
+    platforms: string[],
+    upload: boolean,
+    opts: { auto_grammar?: boolean; remove_sensitive?: boolean } = {},
+  ) {
     try {
-      const response = await axios.post(`${this.aiUrl}/api/process`, { platforms, upload });
+      const response = await axios.post(`${this.aiUrl}/api/process`, {
+        platforms,
+        upload,
+        auto_grammar: opts.auto_grammar ?? false,
+        remove_sensitive: opts.remove_sensitive ?? false,
+      });
       return response.data;
     } catch (error) {
       this.logger.error(`Error calling process on AI Service: ${error.message}`);

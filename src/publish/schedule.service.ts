@@ -1,31 +1,29 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import axios from 'axios';
-import { SupabaseAdminService } from '../data/supabase-admin.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
 
 /**
  * Cron quét các lịch đến hạn (status=pending, publish_at<=now) và đăng bài.
- * Chạy nền qua service-role key (bỏ qua RLS). Thiếu key -> no-op.
+ * Chạy nền qua Prisma (không có phiên user). Thiếu DATABASE_URL -> no-op.
  */
 @Injectable()
 export class ScheduleService {
   private readonly logger = new Logger(ScheduleService.name);
 
-  constructor(private readonly admin: SupabaseAdminService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   @Cron(CronExpression.EVERY_MINUTE, { name: 'post-due-schedules' })
   async postDueSchedules(): Promise<void> {
-    if (!this.admin.enabled) return; // im lặng khi chưa cấu hình service key
+    if (!this.prisma.enabled) return; // im lặng khi chưa cấu hình DB
 
-    const nowIso = new Date().toISOString();
     let due: any[] = [];
     try {
-      due = await this.admin.select(
-        'schedules',
-        `status=eq.pending&publish_at=lte.${nowIso}&select=*`,
-      );
+      due = await this.prisma.schedules.findMany({
+        where: { status: 'pending', publish_at: { lte: new Date() } },
+      });
     } catch (e: any) {
       this.logger.error(`Không đọc được lịch đến hạn: ${e.message}`);
       return;
@@ -38,8 +36,11 @@ export class ScheduleService {
         await this.postOne(s);
       } catch (e: any) {
         this.logger.error(`Lịch ${s.id} lỗi: ${e.message}`);
-        await this.admin
-          .patch('schedules', s.id, { status: 'failed', error: e.message })
+        await this.prisma.schedules
+          .update({
+            where: { id: s.id },
+            data: { status: 'failed', error: e.message },
+          })
           .catch(() => undefined);
       }
     }
@@ -47,16 +48,17 @@ export class ScheduleService {
 
   private async postOne(schedule: any): Promise<void> {
     // đánh dấu đang đăng để cron phút sau không lấy trùng
-    await this.admin.patch('schedules', schedule.id, { status: 'publishing' });
+    await this.prisma.schedules.update({
+      where: { id: schedule.id },
+      data: { status: 'publishing' },
+    });
 
-    const [pv] = await this.admin.select(
-      'processed_videos',
-      `id=eq.${schedule.processed_video_id}&select=*`,
-    );
-    const [page] = await this.admin.select(
-      'pages',
-      `id=eq.${schedule.page_id}&select=*`,
-    );
+    const pv = await this.prisma.processed_videos.findUnique({
+      where: { id: schedule.processed_video_id },
+    });
+    const page = await this.prisma.pages.findUnique({
+      where: { id: schedule.page_id },
+    });
     if (!pv || !page) {
       throw new Error('Thiếu processed_video hoặc page');
     }
@@ -76,11 +78,14 @@ export class ScheduleService {
       throw new Error(res.data?.error || 'AI đăng thất bại');
     }
 
-    await this.admin.patch('schedules', schedule.id, {
-      status: 'posted',
-      posted_at: new Date().toISOString(),
-      post_ref: JSON.stringify(res.data.result).slice(0, 300),
-      error: null,
+    await this.prisma.schedules.update({
+      where: { id: schedule.id },
+      data: {
+        status: 'posted',
+        posted_at: new Date(),
+        post_ref: JSON.stringify(res.data.result).slice(0, 300),
+        error: null,
+      },
     });
     this.logger.log(`Đã đăng lịch ${schedule.id} lên ${page.platform}.`);
   }

@@ -1,0 +1,255 @@
+// Prisma schema — ánh xạ 1:1 với các bảng đã tạo bằng SQL (0001_init, 0002_templates).
+// Bảng đã tồn tại trong Supabase; KHÔNG dùng `prisma migrate` để tạo lại.
+// Quy trình: đặt DATABASE_URL rồi chạy `npx prisma generate` (sinh client).
+// Field đặt tên snake_case = tên cột để JSON trả về giữ nguyên hình dạng cho FE.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------- ENUMS (khớp nhãn enum Postgres) ----------------
+enum platform_source {
+  douyin
+  tiktok
+  youtube
+  xiaohongshu
+  facebook
+
+  @@map("platform_source")
+}
+
+enum platform_target {
+  facebook
+  instagram
+  tiktok
+  youtube
+
+  @@map("platform_target")
+}
+
+enum video_status {
+  new
+  queued
+  processing
+  done
+  failed
+
+  @@map("video_status")
+}
+
+enum job_kind {
+  ingest
+  process
+  upload
+  comment
+
+  @@map("job_kind")
+}
+
+enum job_status {
+  pending
+  running
+  done
+  failed
+
+  @@map("job_status")
+}
+
+enum schedule_status {
+  pending
+  publishing
+  posted
+  failed
+
+  @@map("schedule_status")
+}
+
+enum comment_status {
+  pending
+  commented
+  failed
+
+  @@map("comment_status")
+}
+
+enum affiliate_platform {
+  shopee
+  lazada
+  tiktok_shop
+  web
+  other
+
+  @@map("affiliate_platform")
+}
+
+// ---------------- MODELS ----------------
+model channels {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id        String          @db.Uuid
+  platform        platform_source
+  channel_ref     String
+  display_name    String?
+  is_monitored    Boolean         @default(false)
+  crawl_freq      String          @default("daily")
+  last_crawled_at DateTime?       @db.Timestamptz(6)
+  created_at      DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime        @default(now()) @db.Timestamptz(6)
+
+  @@unique([owner_id, platform, channel_ref])
+  @@map("channels")
+}
+
+model pages {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id       String          @db.Uuid
+  platform       platform_target
+  page_name      String
+  credential_ref String?
+  group_name     String?
+  is_active      Boolean         @default(true)
+  created_at     DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime        @default(now()) @db.Timestamptz(6)
+
+  @@map("pages")
+}
+
+model source_videos {
+  id                String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id          String          @db.Uuid
+  channel_id        String?         @db.Uuid
+  platform          platform_source
+  platform_video_id String
+  descr             String?
+  cover_url         String?
+  original_url      String?
+  drive_id          String?
+  duration          Decimal?        @db.Decimal
+  selected          Boolean         @default(false)
+  status            video_status    @default(new)
+  crawled_at        DateTime        @default(now()) @db.Timestamptz(6)
+  created_at        DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime        @default(now()) @db.Timestamptz(6)
+
+  @@unique([owner_id, platform, platform_video_id])
+  @@map("source_videos")
+}
+
+model processed_videos {
+  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id        String       @db.Uuid
+  source_video_id String       @db.Uuid
+  final_path      String?
+  final_drive_id  String?
+  target_lang     String       @default("vi")
+  voice_id        String?
+  has_subtitle    Boolean      @default(false)
+  category        String?
+  status          video_status @default(new)
+  produced_at     DateTime?    @db.Timestamptz(6)
+  created_at      DateTime     @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime     @default(now()) @db.Timestamptz(6)
+
+  @@map("processed_videos")
+}
+
+model jobs {
+  id           String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id     String     @db.Uuid
+  kind         job_kind
+  payload      Json       @default(dbgenerated("'{}'::jsonb"))
+  status       job_status @default(pending)
+  progress     Int        @default(0)
+  current_step String?
+  error        String?
+  created_at   DateTime   @default(now()) @db.Timestamptz(6)
+  started_at   DateTime?  @db.Timestamptz(6)
+  finished_at  DateTime?  @db.Timestamptz(6)
+
+  @@map("jobs")
+}
+
+model schedules {
+  id                 String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id           String          @db.Uuid
+  processed_video_id String          @db.Uuid
+  page_id            String          @db.Uuid
+  caption            String?
+  publish_at         DateTime        @db.Timestamptz(6)
+  status             schedule_status @default(pending)
+  posted_at          DateTime?       @db.Timestamptz(6)
+  post_ref           String?
+  error              String?
+  created_at         DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime        @default(now()) @db.Timestamptz(6)
+
+  @@map("schedules")
+}
+
+model affiliate_links {
+  id         String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id   String             @db.Uuid
+  name       String
+  url        String
+  platform   affiliate_platform @default(shopee)
+  keywords   String[]
+  is_active  Boolean            @default(true)
+  created_at DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at DateTime           @default(now()) @db.Timestamptz(6)
+
+  @@map("affiliate_links")
+}
+
+model post_comments {
+  id                String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id          String         @db.Uuid
+  schedule_id       String         @db.Uuid
+  affiliate_link_id String?        @db.Uuid
+  comment_text      String?
+  status            comment_status @default(pending)
+  commented_at      DateTime?      @db.Timestamptz(6)
+  error             String?
+  created_at        DateTime       @default(now()) @db.Timestamptz(6)
+
+  @@map("post_comments")
+}
+
+model metrics {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id           String   @db.Uuid
+  schedule_id        String?  @db.Uuid
+  processed_video_id String?  @db.Uuid
+  page_id            String?  @db.Uuid
+  views              BigInt   @default(0)
+  likes              BigInt   @default(0)
+  shares             BigInt   @default(0)
+  comments           BigInt   @default(0)
+  ctr                Decimal? @db.Decimal
+  revenue            Decimal  @default(0) @db.Decimal
+  collected_at       DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("metrics")
+}
+
+model templates {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id         String   @db.Uuid
+  name             String
+  description      String?
+  target_lang      String   @default("vi")
+  translate_style  String?
+  subtitle_style   String?
+  prompt           String?
+  auto_grammar     Boolean  @default(true)
+  remove_sensitive Boolean  @default(true)
+  cover_gradient   String?
+  is_active        Boolean  @default(true)
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("templates")
+}

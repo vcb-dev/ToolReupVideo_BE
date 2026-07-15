@@ -7,16 +7,15 @@ import {
   Param,
   Patch,
   Post,
-  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
 import { SupabaseAuthGuard } from '../auth/auth.guard';
-import { SupabaseRestService } from './supabase-rest.service';
+import { PrismaService } from '../prisma/prisma.service';
 
-// Tên tài nguyên trên URL -> tên bảng trong Postgres.
-// Chỉ những bảng có ở đây mới được truy cập (whitelist chống SQL/route injection).
-const RESOURCE_TABLE: Record<string, string> = {
+// Tên tài nguyên trên URL -> tên model Prisma (đồng thời là delegate prisma.<model>).
+// Whitelist chống truy cập bảng ngoài ý muốn.
+const RESOURCE_MODEL = {
   channels: 'channels',
   pages: 'pages',
   'affiliate-links': 'affiliate_links',
@@ -24,36 +23,61 @@ const RESOURCE_TABLE: Record<string, string> = {
   'source-videos': 'source_videos',
   'processed-videos': 'processed_videos',
   metrics: 'metrics',
+  templates: 'templates',
+} as const;
+
+type ResourceKey = keyof typeof RESOURCE_MODEL;
+
+// Cột sắp xếp mặc định theo model (metrics không có created_at -> dùng collected_at).
+const ORDER_FIELD: Record<string, string> = {
+  metrics: 'collected_at',
 };
 
+// Cột kiểu bigint: Prisma cần BigInt, FE gửi number -> ép kiểu khi ghi.
+const BIGINT_FIELDS: Record<string, string[]> = {
+  metrics: ['views', 'likes', 'shares', 'comments'],
+};
+
+/** Ép các cột bigint (nếu có) từ number/string sang BigInt cho đúng kiểu Prisma. */
+function coerceBigInt(model: string, data: Record<string, any>) {
+  for (const f of BIGINT_FIELDS[model] ?? []) {
+    if (data[f] !== undefined && data[f] !== null && typeof data[f] !== 'bigint') {
+      try {
+        data[f] = BigInt(data[f]);
+      } catch {
+        // giá trị không hợp lệ -> bỏ qua, để Prisma báo lỗi rõ ràng
+      }
+    }
+  }
+  return data;
+}
+
 /**
- * CRUD generic cho các bảng nghiệp vụ, đặt dưới /api/data/* để không đụng
- * các route xử lý video của ProxyController (/api/state, /api/ingest, ...).
- * Mọi thao tác chạy dưới danh nghĩa user -> RLS tự lọc theo owner_id.
+ * CRUD generic cho các bảng nghiệp vụ dưới /api/data/*.
+ * Prisma KHÔNG có RLS -> mọi truy vấn tự lọc owner_id = user hiện tại.
  */
 @UseGuards(SupabaseAuthGuard)
 @Controller('api/data')
 export class DataController {
-  constructor(private readonly rest: SupabaseRestService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
-  private tableOf(resource: string): string {
-    const table = RESOURCE_TABLE[resource];
-    if (!table) {
+  /** Lấy delegate Prisma theo resource; ném 404 nếu không hợp lệ. */
+  private delegate(resource: string): any {
+    const model = RESOURCE_MODEL[resource as ResourceKey];
+    if (!model) {
       throw new NotFoundException(`Tài nguyên không hợp lệ: ${resource}`);
     }
-    return table;
+    return (this.prisma as any)[model];
   }
 
   @Get(':resource')
-  async list(
-    @Param('resource') resource: string,
-    @Query('q') q: string | undefined,
-    @Req() req: any,
-  ) {
-    const table = this.tableOf(resource);
-    // Cho phép truyền query PostgREST tùy biến (vd: platform=eq.tiktok), mặc định sort mới nhất.
-    const query = q && q.length ? q : 'order=created_at.desc';
-    return this.rest.list(req.accessToken, table, query);
+  async list(@Param('resource') resource: string, @Req() req: any) {
+    const d = this.delegate(resource);
+    const orderField = ORDER_FIELD[RESOURCE_MODEL[resource as ResourceKey]] ?? 'created_at';
+    return d.findMany({
+      where: { owner_id: req.user.id },
+      orderBy: { [orderField]: 'desc' },
+    });
   }
 
   @Post(':resource')
@@ -62,10 +86,13 @@ export class DataController {
     @Body() body: Record<string, unknown>,
     @Req() req: any,
   ) {
-    const table = this.tableOf(resource);
-    // Gắn chủ sở hữu = user hiện tại để thỏa RLS `with check (owner_id = auth.uid())`.
-    const payload = { ...body, owner_id: req.user.id };
-    return this.rest.create(req.accessToken, table, payload);
+    const d = this.delegate(resource);
+    const model = RESOURCE_MODEL[resource as ResourceKey];
+    // Không cho client tự đặt owner_id — luôn gắn = user hiện tại (RLS thay thế).
+    const { owner_id, id, created_at, updated_at, ...data } = body as any;
+    return d.create({
+      data: coerceBigInt(model, { ...data, owner_id: req.user.id }),
+    });
   }
 
   @Patch(':resource/:id')
@@ -75,10 +102,18 @@ export class DataController {
     @Body() body: Record<string, unknown>,
     @Req() req: any,
   ) {
-    const table = this.tableOf(resource);
-    // Không cho đổi owner_id qua update.
-    const { owner_id, ...rest } = body as any;
-    return this.rest.update(req.accessToken, table, id, rest);
+    const d = this.delegate(resource);
+    const model = RESOURCE_MODEL[resource as ResourceKey];
+    const { owner_id, id: _id, created_at, updated_at, ...data } = body as any;
+    // updateMany + điều kiện owner_id: chỉ sửa được bản ghi của chính mình.
+    const res = await d.updateMany({
+      where: { id, owner_id: req.user.id },
+      data: coerceBigInt(model, data),
+    });
+    if (res.count === 0) {
+      throw new NotFoundException('Không tìm thấy bản ghi hoặc không có quyền');
+    }
+    return d.findUnique({ where: { id } });
   }
 
   @Delete(':resource/:id')
@@ -87,7 +122,11 @@ export class DataController {
     @Param('id') id: string,
     @Req() req: any,
   ) {
-    const table = this.tableOf(resource);
-    return this.rest.remove(req.accessToken, table, id);
+    const d = this.delegate(resource);
+    const res = await d.deleteMany({ where: { id, owner_id: req.user.id } });
+    if (res.count === 0) {
+      throw new NotFoundException('Không tìm thấy bản ghi hoặc không có quyền');
+    }
+    return { ok: true };
   }
 }

@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import axios from 'axios';
 import { SupabaseAuthGuard } from '../auth/auth.guard';
-import { SupabaseRestService } from '../data/supabase-rest.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
 
@@ -21,17 +21,15 @@ const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
 @UseGuards(SupabaseAuthGuard)
 @Controller('api/produce')
 export class ProduceController {
-  constructor(private readonly rest: SupabaseRestService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   @Post(':sourceVideoId')
   @HttpCode(HttpStatus.OK)
   async produce(@Param('sourceVideoId') id: string, @Req() req: any) {
-    const found = await this.rest.list(
-      req.accessToken,
-      'source_videos',
-      `id=eq.${id}&select=*`,
-    );
-    const sv = Array.isArray(found) ? found[0] : null;
+    // Chỉ lấy source video của chính user (thay cho RLS).
+    const sv = await this.prisma.source_videos.findFirst({
+      where: { id, owner_id: req.user.id },
+    });
     if (!sv) throw new NotFoundException('Không tìm thấy source video');
 
     try {
@@ -48,19 +46,22 @@ export class ProduceController {
         return { ok: false, error: res.data?.error || 'AI produce thất bại' };
       }
 
-      const pv = await this.rest.create(req.accessToken, 'processed_videos', {
-        owner_id: sv.owner_id,
-        source_video_id: sv.id,
-        final_path: res.data.final_path,
-        final_drive_id: res.data.final_drive_id,
-        target_lang: res.data.target_lang,
-        voice_id: res.data.voice_id,
-        has_subtitle: res.data.has_subtitle,
-        status: 'done',
-        produced_at: new Date().toISOString(),
+      const pv = await this.prisma.processed_videos.create({
+        data: {
+          owner_id: sv.owner_id,
+          source_video_id: sv.id,
+          final_path: res.data.final_path,
+          final_drive_id: res.data.final_drive_id,
+          target_lang: res.data.target_lang,
+          voice_id: res.data.voice_id,
+          has_subtitle: res.data.has_subtitle,
+          status: 'done',
+          produced_at: new Date(),
+        },
       });
-      await this.rest.update(req.accessToken, 'source_videos', sv.id, {
-        status: 'done',
+      await this.prisma.source_videos.update({
+        where: { id: sv.id },
+        data: { status: 'done' },
       });
       return { ok: true, processed_video: pv };
     } catch (e: any) {

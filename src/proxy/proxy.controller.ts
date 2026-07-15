@@ -41,7 +41,18 @@ export class ProxyController {
 
   @Post('process')
   @HttpCode(HttpStatus.OK)
-  async process(@Body() body: { platforms: string[]; upload: boolean }) {
-    return this.proxyService.process(body.platforms, body.upload);
+  async process(
+    @Body()
+    body: {
+      platforms: string[];
+      upload: boolean;
+      auto_grammar?: boolean;
+      remove_sensitive?: boolean;
+    },
+  ) {
+    return this.proxyService.process(body.platforms, body.upload, {
+      auto_grammar: body.auto_grammar,
+      remove_sensitive: body.remove_sensitive,
+    });
   }
 }

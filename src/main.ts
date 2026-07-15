@@ -1,9 +1,20 @@
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
+import { Prisma } from '@prisma/client';
 import { AppModule } from './app.module';
+
+// Prisma trả BigInt (đếm) và Decimal (số tiền/tỉ lệ) — JSON.stringify không xử lý
+// được mặc định. Ép về Number để response giữ nguyên kiểu số cho FE.
+(BigInt.prototype as any).toJSON = function () {
+  return Number(this);
+};
+(Prisma.Decimal.prototype as any).toJSON = function () {
+  return this.toNumber();
+};
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  app.enableShutdownHooks();
 
   app.enableCors({
     origin: '*',
