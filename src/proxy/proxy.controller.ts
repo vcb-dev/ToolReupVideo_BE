@@ -5,6 +5,7 @@ import {
   Body,
   HttpCode,
   HttpStatus,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { ProxyService } from './proxy.service';
@@ -46,17 +47,31 @@ export class ProxyController {
     );
   }
 
-  // Lưu các video đã chọn (tải + upload)
+  // Lưu các video đã chọn (tải + upload + ghi source_videos của user)
   @Post('save')
   @HttpCode(HttpStatus.OK)
-  async save(@Body() body: { platform?: string; videos: any[] }) {
-    return this.proxyService.save(body.platform ?? 'douyin', body.videos ?? []);
+  async save(
+    @Body() body: { platform?: string; videos: any[] },
+    @Req() req: any,
+  ) {
+    return this.proxyService.save(
+      body.platform ?? 'douyin',
+      body.videos ?? [],
+      req.user.id,
+    );
   }
 
   @Post('select')
   @HttpCode(HttpStatus.OK)
   async select(@Body() body: { aweme_id: string; selected: boolean }) {
     return this.proxyService.select(body.aweme_id, body.selected);
+  }
+
+  // Xoá 1 video khỏi kho (file trên storage + manifest + dòng source_videos)
+  @Post('videos/delete')
+  @HttpCode(HttpStatus.OK)
+  async deleteVideo(@Body() body: { aweme_id: string }, @Req() req: any) {
+    return this.proxyService.deleteVideo(body.aweme_id, req.user.id);
   }
 
   @Post('process')

@@ -1,10 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class ProxyService {
   private readonly logger = new Logger(ProxyService.name);
   private readonly aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
+
+  constructor(private readonly prisma: PrismaService) {}
 
   async getState() {
     try {
@@ -59,11 +62,17 @@ export class ProxyService {
     }
   }
 
-  async save(platform: string, videos: any[]) {
+  /**
+   * Lưu video đã chọn: bắn sang AI job NỀN (tải+upload) rồi TRẢ VỀ NGAY để nút
+   * không bị treo. AI xong sẽ gọi ngược /internal/source-videos ghi DB (kèm
+   * owner_id). Truyền owner_id xuống AI để job nền biết ghi cho user nào.
+   */
+  async save(platform: string, videos: any[], ownerId: string) {
     try {
       const response = await axios.post(`${this.aiUrl}/api/save`, {
         platform,
         videos,
+        owner_id: ownerId,
       });
       return response.data;
     } catch (error) {
@@ -75,6 +84,43 @@ export class ProxyService {
           `Không thể kết nối dịch vụ AI: ${error.message}`,
       };
     }
+  }
+
+  /**
+   * Xoá 1 video khỏi kho — dọn CẢ 3 nơi trong 1 thao tác:
+   *   1) AI: xoá file trên storage (R2/Supabase qua gateway) + bỏ khỏi manifest
+   *   2) DB: xoá dòng source_videos của user (theo platform_video_id)
+   * File/manifest là best-effort (đã xoá tay cũng không lỗi); DB xoá theo owner.
+   */
+  async deleteVideo(awemeId: string, ownerId: string) {
+    if (!awemeId) {
+      return { ok: false, error: 'Thiếu aweme_id.' };
+    }
+    let aiOk = false;
+    try {
+      const res = await axios.post(
+        `${this.aiUrl}/api/delete`,
+        { aweme_id: awemeId },
+        { timeout: 60000 },
+      );
+      aiOk = !!res.data?.ok;
+    } catch (error) {
+      this.logger.warn(`AI xoá video lỗi (bỏ qua): ${error.message}`);
+    }
+
+    let deletedRows = 0;
+    if (this.prisma.enabled) {
+      try {
+        const res = await this.prisma.source_videos.deleteMany({
+          where: { owner_id: ownerId, platform_video_id: awemeId },
+        });
+        deletedRows = res.count;
+      } catch (error) {
+        this.logger.error(`Xoá source_videos lỗi: ${error.message}`);
+        return { ok: false, error: `Xoá DB lỗi: ${error.message}` };
+      }
+    }
+    return { ok: true, aiOk, deletedRows };
   }
 
   async select(aweme_id: string, selected: boolean) {
