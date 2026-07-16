@@ -51,13 +51,14 @@ export class ProxyController {
   @Post('save')
   @HttpCode(HttpStatus.OK)
   async save(
-    @Body() body: { platform?: string; videos: any[] },
+    @Body() body: { platform?: string; videos: any[]; topic?: string },
     @Req() req: any,
   ) {
     return this.proxyService.save(
       body.platform ?? 'douyin',
       body.videos ?? [],
       req.user.id,
+      body.topic,
     );
   }
 

@@ -1,4 +1,6 @@
 import {
+  BadRequestException,
+  Body,
   Controller,
   HttpCode,
   HttpStatus,
@@ -22,6 +24,63 @@ const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
 @Controller('api/produce')
 export class ProduceController {
   constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * Sản xuất MẺ video đã chọn (từ Xưởng video) -> ghi processed_videos, tùy
+   * chọn đăng luôn. Chạy NỀN trên AI (không bị proxy cắt): forward danh sách +
+   * owner_id sang AI /api/produce_batch rồi trả ngay. Tiến độ xem qua /api/state.
+   */
+  @Post('batch')
+  @HttpCode(HttpStatus.OK)
+  async batch(
+    @Body()
+    body: {
+      source_video_ids?: string[];
+      platforms?: string[];
+      upload?: boolean;
+      auto_grammar?: boolean;
+      remove_sensitive?: boolean;
+    },
+    @Req() req: any,
+  ) {
+    const ids = body.source_video_ids || [];
+    if (ids.length === 0) {
+      throw new BadRequestException('Chưa chọn video nào.');
+    }
+    // Chỉ lấy source video của chính user (thay cho RLS).
+    const svs = await this.prisma.source_videos.findMany({
+      where: { id: { in: ids }, owner_id: req.user.id },
+    });
+    if (svs.length === 0) {
+      throw new NotFoundException('Không tìm thấy source video hợp lệ');
+    }
+    const items = svs.map((sv) => ({
+      source_id: sv.id,
+      video_id: sv.platform_video_id,
+      drive_id: sv.drive_id,
+      desc: sv.descr,
+    }));
+    try {
+      const res = await axios.post(
+        `${AI_URL}/api/produce_batch`,
+        {
+          owner_id: req.user.id,
+          items,
+          platforms: body.platforms ?? [],
+          upload: body.upload ?? false,
+          auto_grammar: body.auto_grammar ?? false,
+          remove_sensitive: body.remove_sensitive ?? false,
+        },
+        { timeout: 1000 * 30 },
+      );
+      if (!res.data?.ok) {
+        return { ok: false, error: res.data?.error || 'AI produce_batch thất bại' };
+      }
+      return { ok: true, queued: items.length };
+    } catch (e: any) {
+      return { ok: false, error: e.message };
+    }
+  }
 
   @Post(':sourceVideoId')
   @HttpCode(HttpStatus.OK)

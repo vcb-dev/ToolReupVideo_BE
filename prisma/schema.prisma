@@ -129,6 +129,7 @@ model source_videos {
   original_url      String?
   drive_id          String?
   duration          Decimal?        @db.Decimal
+  topic             String?
   selected          Boolean         @default(false)
   status            video_status    @default(new)
   crawled_at        DateTime        @default(now()) @db.Timestamptz(6)

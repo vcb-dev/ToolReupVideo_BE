@@ -37,6 +37,7 @@ export class IngestInternalController {
       cover_url: v.cover_url,
       original_url: v.original_url,
       drive_id: v.drive_id,
+      topic: v.topic ?? null,
       owner_id: ownerId,
       status: 'new',
     }));

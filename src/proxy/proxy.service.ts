@@ -67,12 +67,13 @@ export class ProxyService {
    * không bị treo. AI xong sẽ gọi ngược /internal/source-videos ghi DB (kèm
    * owner_id). Truyền owner_id xuống AI để job nền biết ghi cho user nào.
    */
-  async save(platform: string, videos: any[], ownerId: string) {
+  async save(platform: string, videos: any[], ownerId: string, topic?: string) {
     try {
       const response = await axios.post(`${this.aiUrl}/api/save`, {
         platform,
         videos,
         owner_id: ownerId,
+        topic: topic ?? null,
       });
       return response.data;
     } catch (error) {
@@ -96,11 +97,25 @@ export class ProxyService {
     if (!awemeId) {
       return { ok: false, error: 'Thiếu aweme_id.' };
     }
+    // Tra drive_id từ DB trước — video cron cào chỉ có trong DB (không có trong
+    // manifest AI), nên phải truyền drive_id để AI dọn đúng file storage.
+    let driveId: string | null = null;
+    if (this.prisma.enabled) {
+      try {
+        const sv = await this.prisma.source_videos.findFirst({
+          where: { owner_id: ownerId, platform_video_id: awemeId },
+          select: { drive_id: true },
+        });
+        driveId = sv?.drive_id ?? null;
+      } catch (error) {
+        this.logger.warn(`Tra drive_id lỗi (bỏ qua): ${error.message}`);
+      }
+    }
     let aiOk = false;
     try {
       const res = await axios.post(
         `${this.aiUrl}/api/delete`,
-        { aweme_id: awemeId },
+        { aweme_id: awemeId, drive_id: driveId },
         { timeout: 60000 },
       );
       aiOk = !!res.data?.ok;
