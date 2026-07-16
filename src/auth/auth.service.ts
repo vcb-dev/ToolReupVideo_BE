@@ -87,6 +87,48 @@ export class AuthService {
     }
   }
 
+  // Gia hạn phiên: dùng refresh_token để lấy access_token mới từ Supabase.
+  // FE gọi khi access_token cũ hết hạn để không phải đăng nhập lại.
+  async refresh(refreshToken: string) {
+    this.ensureConfig();
+    if (!refreshToken) {
+      throw new UnauthorizedException('Thiếu refresh_token');
+    }
+    try {
+      const res = await axios.post(
+        `${this.supabaseUrl}/auth/v1/token?grant_type=refresh_token`,
+        { refresh_token: refreshToken },
+        {
+          headers: {
+            apikey: this.anonKey,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      const data = res.data;
+      return {
+        ok: true,
+        access_token: data.access_token,
+        refresh_token: data.refresh_token,
+        expires_at: data.expires_at,
+        user: {
+          id: data.user?.id,
+          email: data.user?.email,
+          is_admin: this.isAdmin(data.user?.email),
+        },
+      };
+    } catch (error) {
+      const raw =
+        error.response?.data?.error_description ||
+        error.response?.data?.msg ||
+        error.message;
+      this.logger.warn(`Gia hạn phiên thất bại: ${raw}`);
+      throw new UnauthorizedException(
+        'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại',
+      );
+    }
+  }
+
   // Xác minh access_token với Supabase. Hợp lệ -> trả về thông tin user.
   async getUser(token: string) {
     this.ensureConfig();

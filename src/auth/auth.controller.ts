@@ -11,6 +11,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { SupabaseAuthGuard } from './auth.guard';
 import { AdminGuard } from './admin.guard';
@@ -20,10 +21,23 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   // Đăng nhập bằng email + mật khẩu (tài khoản do admin tạo trên Supabase)
+  // Chống brute-force: tối đa 5 lần thử / 60 giây / IP.
   @Post('login')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async login(@Body() body: { email: string; password: string }) {
     return this.authService.login(body?.email, body?.password);
+  }
+
+  // Gia hạn phiên bằng refresh_token (FE gọi khi access_token hết hạn)
+  // Nới hơn login vì nhiều tab có thể refresh: tối đa 30 lần / 60 giây / IP.
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
+  async refresh(@Body() body: { refresh_token: string }) {
+    return this.authService.refresh(body?.refresh_token);
   }
 
   // Kiểm tra phiên hiện tại còn hợp lệ không (FE gọi khi tải trang)
