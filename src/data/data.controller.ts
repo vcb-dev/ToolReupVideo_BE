@@ -11,6 +11,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { SupabaseAuthGuard } from '../auth/auth.guard';
+import { DeletePinService } from '../auth/delete-pin.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 // Tên tài nguyên trên URL -> tên model Prisma (đồng thời là delegate prisma.<model>).
@@ -24,6 +25,7 @@ const RESOURCE_MODEL = {
   'processed-videos': 'processed_videos',
   metrics: 'metrics',
   templates: 'templates',
+  'media-assets': 'media_assets',
 } as const;
 
 type ResourceKey = keyof typeof RESOURCE_MODEL;
@@ -59,7 +61,10 @@ function coerceBigInt(model: string, data: Record<string, any>) {
 @UseGuards(SupabaseAuthGuard)
 @Controller('api/data')
 export class DataController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly deletePin: DeletePinService,
+  ) {}
 
   /** Lấy delegate Prisma theo resource; ném 404 nếu không hợp lệ. */
   private delegate(resource: string): any {
@@ -122,6 +127,7 @@ export class DataController {
     @Param('id') id: string,
     @Req() req: any,
   ) {
+    await this.deletePin.assertDeleteAllowed(req.user, req.headers['x-delete-pin']);
     const d = this.delegate(resource);
     const res = await d.deleteMany({ where: { id, owner_id: req.user.id } });
     if (res.count === 0) {

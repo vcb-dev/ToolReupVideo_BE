@@ -15,10 +15,14 @@ import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { SupabaseAuthGuard } from './auth.guard';
 import { AdminGuard } from './admin.guard';
+import { DeletePinService } from './delete-pin.service';
 
 @Controller('api/auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly deletePin: DeletePinService,
+  ) {}
 
   // Đăng nhập bằng email + mật khẩu (tài khoản do admin tạo trên Supabase)
   // Chống brute-force: tối đa 5 lần thử / 60 giây / IP.
@@ -77,5 +81,32 @@ export class AuthController {
   @UseGuards(SupabaseAuthGuard, AdminGuard)
   async deleteUser(@Param('id') id: string) {
     return this.authService.deleteUser(id);
+  }
+
+  // ---- Mã PIN khoá xoá (admin đặt; nhân viên phải nhập khi xoá) ----
+
+  @Post('delete-pin')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(SupabaseAuthGuard, AdminGuard)
+  async setDeletePin(@Body() body: { pin?: string }) {
+    const pin = (body?.pin || '').trim();
+    if (pin.length < 4) {
+      return { ok: false, error: 'Mã PIN tối thiểu 4 ký tự.' };
+    }
+    await this.deletePin.setPin(pin);
+    return { ok: true };
+  }
+
+  @Get('delete-pin')
+  @UseGuards(SupabaseAuthGuard, AdminGuard)
+  async deletePinStatus() {
+    return { ok: true, isSet: await this.deletePin.isSet() };
+  }
+
+  // Mọi user đã đăng nhập: có phải nhập PIN khi xoá không (để FE quyết định UI).
+  @Get('delete-pin/required')
+  @UseGuards(SupabaseAuthGuard)
+  async deletePinRequired(@Req() req: any) {
+    return { ok: true, required: await this.deletePin.requiredFor(req.user) };
   }
 }

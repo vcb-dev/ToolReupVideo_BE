@@ -10,12 +10,16 @@ import {
 } from '@nestjs/common';
 import { ProxyService } from './proxy.service';
 import { SupabaseAuthGuard } from '../auth/auth.guard';
+import { DeletePinService } from '../auth/delete-pin.service';
 
 // Toàn bộ route xử lý video yêu cầu đăng nhập
 @UseGuards(SupabaseAuthGuard)
 @Controller('api')
 export class ProxyController {
-  constructor(private readonly proxyService: ProxyService) {}
+  constructor(
+    private readonly proxyService: ProxyService,
+    private readonly deletePin: DeletePinService,
+  ) {}
 
   @Get('state')
   async getState() {
@@ -72,6 +76,7 @@ export class ProxyController {
   @Post('videos/delete')
   @HttpCode(HttpStatus.OK)
   async deleteVideo(@Body() body: { aweme_id: string }, @Req() req: any) {
+    await this.deletePin.assertDeleteAllowed(req.user, req.headers['x-delete-pin']);
     return this.proxyService.deleteVideo(body.aweme_id, req.user.id);
   }
 

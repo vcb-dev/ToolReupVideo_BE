@@ -92,12 +92,29 @@ export class StorageService {
     return `${this.sbUrl}/storage/v1${res.data.url}`;
   }
 
-  /** URL ký sẵn để AI GET file về (hết hạn sau expiresIn giây). */
-  async signDownload(key: string, expiresIn = 3600): Promise<string> {
+  /**
+   * URL ký sẵn để GET file (hết hạn sau expiresIn giây). `responseContentType`
+   * (chỉ R2) ép Content-Type khi trả về — để trình duyệt PHÁT inline (video/mp4)
+   * dù object lưu không có content-type đúng. Đường tải nội bộ của AI bỏ trống.
+   */
+  async signDownload(
+    key: string,
+    expiresIn = 3600,
+    responseContentType?: string,
+  ): Promise<string> {
     if (this.provider === 'r2') {
       return getSignedUrl(
         this.s3(),
-        new GetObjectCommand({ Bucket: this.r2Bucket, Key: key }),
+        new GetObjectCommand({
+          Bucket: this.r2Bucket,
+          Key: key,
+          ...(responseContentType
+            ? {
+                ResponseContentType: responseContentType,
+                ResponseContentDisposition: 'inline',
+              }
+            : {}),
+        }),
         { expiresIn },
       );
     }
@@ -121,6 +138,38 @@ export class StorageService {
     await axios.delete(
       `${this.sbUrl}/storage/v1/object/${this.sbBucket}/${encodeURI(key)}`,
       { headers: this.sbHeaders() },
+    );
+  }
+
+  /** PUT trực tiếp 1 buffer lên kho (dùng cho upload media qua BE, file nhỏ/vừa). */
+  async putBuffer(
+    key: string,
+    body: Buffer,
+    contentType?: string,
+  ): Promise<void> {
+    if (this.provider === 'r2') {
+      await this.s3().send(
+        new PutObjectCommand({
+          Bucket: this.r2Bucket,
+          Key: key,
+          Body: body,
+          ContentType: contentType,
+        }),
+      );
+      return;
+    }
+    this.ensureSupabase();
+    await axios.post(
+      `${this.sbUrl}/storage/v1/object/${this.sbBucket}/${encodeURI(key)}`,
+      body,
+      {
+        headers: {
+          ...this.sbHeaders(),
+          'Content-Type': contentType || 'application/octet-stream',
+        },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+      },
     );
   }
 }

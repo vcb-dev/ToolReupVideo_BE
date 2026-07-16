@@ -140,6 +140,29 @@ model source_videos {
   @@map("source_videos")
 }
 
+model app_config {
+  key        String   @id
+  value      String?
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("app_config")
+}
+
+model media_assets {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id     String   @db.Uuid
+  kind         String
+  name         String
+  drive_id     String?
+  voice_id     String?
+  chroma_color String?  @default("0x00FF00")
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([owner_id, kind])
+  @@map("media_assets")
+}
+
 model processed_videos {
   id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   owner_id        String       @db.Uuid
