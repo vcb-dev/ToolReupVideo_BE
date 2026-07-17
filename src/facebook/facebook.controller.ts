@@ -171,6 +171,20 @@ export class FacebookController {
   }
 
   /**
+   * Nick FB của từng page đã nối, để UI Quản lý Page gom nhóm. Bảng
+   * page_credentials chứa token nên KHÔNG cho FE đọc thẳng -> chỉ trả 3 cột này.
+   */
+  @UseGuards(SupabaseAuthGuard)
+  @Get('accounts')
+  async accounts(@Req() req: any) {
+    const rows = await this.prisma.page_credentials.findMany({
+      where: { owner_id: req.user.id, provider: 'facebook_graph' },
+      select: { page_id: true, fb_user_id: true, fb_user_name: true },
+    });
+    return { ok: true, accounts: rows };
+  }
+
+  /**
    * Lưu các page user đã chọn: tạo/cập nhật `pages` + `page_credentials`.
    * Chạy xong xoá bản tạm (không giữ token thừa trong app_config).
    */
@@ -190,7 +204,7 @@ export class FacebookController {
     if (!row?.value) {
       throw new BadRequestException('Phiên kết nối đã hết, đăng nhập lại.');
     }
-    const all = this.parsePending(row.value).pages;
+    const { account, pages: all } = this.parsePending(row.value);
     const chosen = all.filter((p) => ids.includes(p.id));
     if (chosen.length === 0) {
       throw new BadRequestException('Page đã chọn không có trong phiên này.');
@@ -225,6 +239,7 @@ export class FacebookController {
         });
         pageId = created.id;
       }
+      // Nick đi kèm token: nối lại page bằng nick khác thì token VÀ nick cùng đổi.
       await this.prisma.page_credentials.upsert({
         where: { page_id: pageId },
         create: {
@@ -233,11 +248,15 @@ export class FacebookController {
           provider: 'facebook_graph',
           external_id: p.id,
           access_token: p.access_token,
+          fb_user_id: account.id || null,
+          fb_user_name: account.name || null,
           updated_at: new Date(),
         },
         update: {
           external_id: p.id,
           access_token: p.access_token,
+          fb_user_id: account.id || null,
+          fb_user_name: account.name || null,
           updated_at: new Date(),
         },
       });

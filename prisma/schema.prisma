@@ -127,9 +127,13 @@ model page_credentials {
   provider     String   @default("facebook_graph")
   external_id  String?
   access_token String
+  /// Nick FB đã cấp token này. Trống với page nối trước migration 0007.
+  fb_user_id   String?
+  fb_user_name String?
   updated_at   DateTime @default(now()) @db.Timestamptz(6)
 
   @@index([owner_id])
+  @@index([owner_id, fb_user_id])
   @@map("page_credentials")
 }
 
