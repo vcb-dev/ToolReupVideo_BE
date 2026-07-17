@@ -155,6 +155,9 @@ model source_videos {
   created_at        DateTime        @default(now()) @db.Timestamptz(6)
   updated_at        DateTime        @default(now()) @db.Timestamptz(6)
 
+  /// Khoá ngoại đã có sẵn trong DB từ 0001; khai ở đây để lọc "chưa sản xuất".
+  processed processed_videos[]
+
   @@unique([owner_id, platform, platform_video_id])
   @@map("source_videos")
 }
@@ -197,6 +200,8 @@ model processed_videos {
   created_at      DateTime     @default(now()) @db.Timestamptz(6)
   updated_at      DateTime     @default(now()) @db.Timestamptz(6)
 
+  source source_videos @relation(fields: [source_video_id], references: [id], onDelete: Cascade)
+
   @@map("processed_videos")
 }
 
@@ -227,10 +232,46 @@ model schedules {
   posted_at          DateTime?       @db.Timestamptz(6)
   post_ref           String?
   error              String?
+  /// Quy tắc "Tự động" đã sinh ra lịch này; null = user tự thêm tay.
+  rule_id            String?         @db.Uuid
   created_at         DateTime        @default(now()) @db.Timestamptz(6)
   updated_at         DateTime        @default(now()) @db.Timestamptz(6)
 
+  rule automation_rules? @relation(fields: [rule_id], references: [id])
+
+  @@index([rule_id])
   @@map("schedules")
+}
+
+/// Quy tắc tự sản xuất + tự đăng theo lịch lặp hàng tuần (tab "Tự động").
+/// `times` là giờ VIỆT NAM; cron quy ra UTC khi tạo schedules.
+model automation_rules {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id     String   @db.Uuid
+  name         String
+  /// 1=Thứ 2 ... 7=Chủ nhật (ISO).
+  weekdays     Int[]    @db.SmallInt
+  /// Giờ VN dạng 'HH:MM'.
+  times        String[]
+  page_ids     String[] @db.Uuid
+  /// Nguồn video: any (bất kỳ) | topics (theo cụm chủ đề) | videos (tick tay).
+  pick_mode        String   @default("any")
+  topics           String[]
+  source_video_ids String[] @db.Uuid
+  video_config Json     @default("{}")
+  hashtags     String?
+  affiliate_id String?  @db.Uuid
+  lead_minutes Int      @default(60)
+  is_active    Boolean  @default(true)
+  last_run_at  DateTime? @db.Timestamptz(6)
+  last_error   String?
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime @default(now()) @db.Timestamptz(6)
+
+  schedules schedules[]
+
+  @@index([owner_id])
+  @@map("automation_rules")
 }
 
 model affiliate_links {

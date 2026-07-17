@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
+import { PostTargetService } from './post-target.service';
 
 const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
 
@@ -13,7 +14,10 @@ const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
 export class ScheduleService {
   private readonly logger = new Logger(ScheduleService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly postTarget: PostTargetService,
+  ) {}
 
   @Cron(CronExpression.EVERY_MINUTE, { name: 'post-due-schedules' })
   async postDueSchedules(): Promise<void> {
@@ -56,19 +60,19 @@ export class ScheduleService {
     const pv = await this.prisma.processed_videos.findUnique({
       where: { id: schedule.processed_video_id },
     });
-    const page = await this.prisma.pages.findUnique({
-      where: { id: schedule.page_id },
-    });
-    if (!pv || !page) {
-      throw new Error('Thiếu processed_video hoặc page');
-    }
+    if (!pv) throw new Error('Thiếu processed_video');
+
+    // Đăng theo PAGE (kèm token nếu page nối API FB). Trước đây chỉ gửi
+    // `platforms` -> AI luôn đi upload-post và bỏ qua Page token.
+    const target = await this.postTarget.build(schedule.page_id, schedule.owner_id);
+    if (!target) throw new Error('Thiếu page');
 
     const res = await axios.post(
       `${AI_URL}/api/post`,
       {
         final_drive_id: pv.final_drive_id,
         final_path: pv.final_path,
-        platforms: [page.platform],
+        post_target: target,
         title: schedule.caption || '',
         description: schedule.caption || '',
       },
@@ -87,6 +91,6 @@ export class ScheduleService {
         error: null,
       },
     });
-    this.logger.log(`Đã đăng lịch ${schedule.id} lên ${page.platform}.`);
+    this.logger.log(`Đã đăng lịch ${schedule.id} lên ${target.platform}.`);
   }
 }
