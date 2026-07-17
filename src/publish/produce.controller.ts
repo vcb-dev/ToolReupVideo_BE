@@ -56,6 +56,23 @@ export class ProduceController {
       if (ma?.drive_id) c.music_url = await this.storage.signDownload(ma.drive_id, 3600);
       delete c.music_asset_id;
     }
+    if (Array.isArray(c.post_page_ids) && c.post_page_ids.length) {
+      const pages = await this.prisma.pages.findMany({
+        where: { id: { in: c.post_page_ids }, owner_id: ownerId },
+      });
+      c.post_targets = pages.map((p) => ({
+        platform: p.platform,
+        user: p.credential_ref || '',
+      }));
+      delete c.post_page_ids;
+    }
+    if (c.affiliate_id) {
+      const aff = await this.prisma.affiliate_links.findFirst({
+        where: { id: c.affiliate_id, owner_id: ownerId },
+      });
+      if (aff?.url) c.affiliate_url = aff.url;
+      delete c.affiliate_id;
+    }
     if (c.voice_asset_id) {
       const va = await this.prisma.media_assets.findFirst({
         where: { id: c.voice_asset_id, owner_id: ownerId, kind: 'voice' },
@@ -107,6 +124,76 @@ export class ProduceController {
    * chọn đăng luôn. Chạy NỀN trên AI (không bị proxy cắt): forward danh sách +
    * owner_id sang AI /api/produce_batch rồi trả ngay. Tiến độ xem qua /api/state.
    */
+  /**
+   * ĐĂNG mẻ video ĐÃ SẢN XUẤT (không produce lại). Tìm processed_video mới nhất
+   * của mỗi source đã chọn, resolve page/affiliate, forward AI /api/post_batch.
+   */
+  @Post('publish')
+  @HttpCode(HttpStatus.OK)
+  async publish(
+    @Body()
+    body: {
+      source_video_ids?: string[];
+      platforms?: string[];
+      config?: Record<string, any>;
+    },
+    @Req() req: any,
+  ) {
+    const ids = body.source_video_ids || [];
+    if (ids.length === 0) throw new BadRequestException('Chưa chọn video nào.');
+
+    const sources = await this.prisma.source_videos.findMany({
+      where: { id: { in: ids }, owner_id: req.user.id },
+      select: { id: true, descr: true },
+    });
+    const descById = new Map(sources.map((s) => [s.id, s.descr || '']));
+
+    const pvs = await this.prisma.processed_videos.findMany({
+      where: {
+        owner_id: req.user.id,
+        source_video_id: { in: ids },
+        final_drive_id: { not: null },
+      },
+      orderBy: { created_at: 'desc' },
+    });
+    // Mỗi source lấy bản thành phẩm mới nhất.
+    const seen = new Set<string>();
+    const items: any[] = [];
+    for (const pv of pvs) {
+      if (seen.has(pv.source_video_id)) continue;
+      seen.add(pv.source_video_id);
+      items.push({
+        final_drive_id: pv.final_drive_id,
+        final_path: pv.final_path,
+        desc: descById.get(pv.source_video_id) || '',
+      });
+    }
+    if (items.length === 0) {
+      return { ok: false, error: 'Chưa có video thành phẩm để đăng (hãy xử lý trước).' };
+    }
+
+    const config = await this.resolveMediaConfig(body.config ?? {}, req.user.id);
+    try {
+      const res = await axios.post(
+        `${AI_URL}/api/post_batch`,
+        {
+          items,
+          post_targets: config.post_targets || [],
+          platforms: body.platforms ?? [],
+          hashtags: config.hashtags || '',
+          affiliate_url: config.affiliate_url || '',
+        },
+        { timeout: 1000 * 30 },
+      );
+      if (!res.data?.ok) {
+        return { ok: false, error: res.data?.error || 'AI post_batch thất bại' };
+      }
+      return { ok: true, queued: items.length };
+    } catch (e: any) {
+      return { ok: false, error: e.message };
+    }
+  }
+
   @Post('batch')
   @HttpCode(HttpStatus.OK)
   async batch(

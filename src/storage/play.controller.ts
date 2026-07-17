@@ -38,4 +38,23 @@ export class StoragePlayController {
     const url = await this.storage.signDownload(sv.drive_id, 3600, 'video/mp4');
     return { ok: true, url };
   }
+
+  // Phát VIDEO THÀNH PHẨM (đã sản xuất) — dùng để xem video thử ở Xưởng.
+  @Get('play-processed/:processedVideoId')
+  async playProcessed(@Param('processedVideoId') id: string, @Req() req: any) {
+    const pv = await this.prisma.processed_videos.findFirst({
+      where: { id, owner_id: req.user.id },
+      select: { final_drive_id: true },
+    });
+    if (!pv) throw new NotFoundException('Không tìm thấy video thành phẩm');
+    if (!pv.final_drive_id) {
+      return { ok: false, error: 'Chưa có file thành phẩm.' };
+    }
+    const url = await this.storage.signDownload(
+      pv.final_drive_id,
+      3600,
+      'video/mp4',
+    );
+    return { ok: true, url };
+  }
 }
