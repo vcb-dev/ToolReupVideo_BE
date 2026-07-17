@@ -111,11 +111,26 @@ model pages {
   page_name      String
   credential_ref String?
   group_name     String?
+  provider       String          @default("upload_post")
   is_active      Boolean         @default(true)
   created_at     DateTime        @default(now()) @db.Timestamptz(6)
   updated_at     DateTime        @default(now()) @db.Timestamptz(6)
 
   @@map("pages")
+}
+
+/// Token đăng bài của page (Facebook Graph). Tách khỏi `pages` vì
+/// /api/data/pages trả mọi cột về FE — token không được ra trình duyệt.
+model page_credentials {
+  page_id      String   @id @db.Uuid
+  owner_id     String   @db.Uuid
+  provider     String   @default("facebook_graph")
+  external_id  String?
+  access_token String
+  updated_at   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([owner_id])
+  @@map("page_credentials")
 }
 
 model source_videos {

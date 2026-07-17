@@ -60,10 +60,28 @@ export class ProduceController {
       const pages = await this.prisma.pages.findMany({
         where: { id: { in: c.post_page_ids }, owner_id: ownerId },
       });
-      c.post_targets = pages.map((p) => ({
-        platform: p.platform,
-        user: p.credential_ref || '',
-      }));
+      // Page nối FB -> gửi kèm Page token để AI đăng thẳng qua Graph API.
+      const creds = await this.prisma.page_credentials.findMany({
+        where: { page_id: { in: pages.map((p) => p.id) }, owner_id: ownerId },
+      });
+      const credByPage = new Map(creds.map((cr) => [cr.page_id, cr]));
+      c.post_targets = pages.map((p) => {
+        const cr = credByPage.get(p.id);
+        if (p.provider === 'facebook_graph' && cr?.access_token) {
+          return {
+            platform: p.platform,
+            provider: 'facebook_graph',
+            page_id: cr.external_id,
+            page_token: cr.access_token,
+          };
+        }
+        // Chưa nối token -> giữ đường cũ qua upload-post.
+        return {
+          platform: p.platform,
+          provider: 'upload_post',
+          user: p.credential_ref || '',
+        };
+      });
       delete c.post_page_ids;
     }
     if (c.affiliate_id) {
@@ -125,47 +143,72 @@ export class ProduceController {
    * owner_id sang AI /api/produce_batch rồi trả ngay. Tiến độ xem qua /api/state.
    */
   /**
-   * ĐĂNG mẻ video ĐÃ SẢN XUẤT (không produce lại). Tìm processed_video mới nhất
-   * của mỗi source đã chọn, resolve page/affiliate, forward AI /api/post_batch.
+   * ĐĂNG mẻ video ĐÃ SẢN XUẤT (không produce lại), resolve page/affiliate rồi
+   * forward AI /api/post_batch. Hai cách chỉ định video:
+   *   - `processed_video_ids`: đăng ĐÚNG bản thành phẩm đã chọn (Kho).
+   *   - `source_video_ids`: mỗi source lấy bản thành phẩm mới nhất (Xưởng).
+   *
+   * `captions`: caption user tự sửa cho TỪNG video, key theo processed_video_id
+   * HOẶC source_video_id (nhận cả hai để Kho và Xưởng dùng chung). Thiếu key ->
+   * giữ mô tả gốc. AI vẫn nối hashtag + affiliate vào sau caption này.
    */
   @Post('publish')
   @HttpCode(HttpStatus.OK)
   async publish(
     @Body()
     body: {
+      processed_video_ids?: string[];
       source_video_ids?: string[];
       platforms?: string[];
+      captions?: Record<string, string>;
       config?: Record<string, any>;
     },
     @Req() req: any,
   ) {
-    const ids = body.source_video_ids || [];
-    if (ids.length === 0) throw new BadRequestException('Chưa chọn video nào.');
-
-    const sources = await this.prisma.source_videos.findMany({
-      where: { id: { in: ids }, owner_id: req.user.id },
-      select: { id: true, descr: true },
-    });
-    const descById = new Map(sources.map((s) => [s.id, s.descr || '']));
+    const pvIds = body.processed_video_ids || [];
+    const srcIds = body.source_video_ids || [];
+    if (pvIds.length === 0 && srcIds.length === 0) {
+      throw new BadRequestException('Chưa chọn video nào.');
+    }
 
     const pvs = await this.prisma.processed_videos.findMany({
       where: {
         owner_id: req.user.id,
-        source_video_id: { in: ids },
         final_drive_id: { not: null },
+        ...(pvIds.length
+          ? { id: { in: pvIds } }
+          : { source_video_id: { in: srcIds } }),
       },
       orderBy: { created_at: 'desc' },
     });
-    // Mỗi source lấy bản thành phẩm mới nhất.
+
+    const sources = await this.prisma.source_videos.findMany({
+      where: {
+        id: { in: pvs.map((p) => p.source_video_id) },
+        owner_id: req.user.id,
+      },
+      select: { id: true, descr: true },
+    });
+    const descById = new Map(sources.map((s) => [s.id, s.descr || '']));
+
+    // Chọn theo source thì mỗi source chỉ lấy bản mới nhất; chọn thẳng thành
+    // phẩm thì đăng đúng những bản đó (user đã xem và quyết định).
     const seen = new Set<string>();
+    const caps = body.captions || {};
     const items: any[] = [];
     for (const pv of pvs) {
-      if (seen.has(pv.source_video_id)) continue;
-      seen.add(pv.source_video_id);
+      if (!pvIds.length) {
+        if (seen.has(pv.source_video_id)) continue;
+        seen.add(pv.source_video_id);
+      }
+      // Caption user sửa (key theo thành phẩm hoặc theo source) > mô tả gốc.
+      // Dùng `??` chứ không `||`: giữ nguyên chuỗi user gõ, kể cả rỗng (AI sẽ
+      // tự rơi về upload.caption mặc định nếu rỗng).
+      const edited = caps[pv.id] ?? caps[pv.source_video_id];
       items.push({
         final_drive_id: pv.final_drive_id,
         final_path: pv.final_path,
-        desc: descById.get(pv.source_video_id) || '',
+        desc: edited ?? descById.get(pv.source_video_id) ?? '',
       });
     }
     if (items.length === 0) {

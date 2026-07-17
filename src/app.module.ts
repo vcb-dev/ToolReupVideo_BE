@@ -6,6 +6,7 @@ import { ProxyModule } from './proxy/proxy.module';
 import { AuthModule } from './auth/auth.module';
 import { DataModule } from './data/data.module';
 import { CrawlModule } from './crawl/crawl.module';
+import { FacebookModule } from './facebook/facebook.module';
 import { PublishModule } from './publish/publish.module';
 import { StatsModule } from './stats/stats.module';
 import { StorageModule } from './storage/storage.module';
@@ -21,6 +22,7 @@ import { StorageModule } from './storage/storage.module';
     ProxyModule,
     DataModule,
     CrawlModule,
+    FacebookModule,
     PublishModule,
     StatsModule,
     StorageModule,
