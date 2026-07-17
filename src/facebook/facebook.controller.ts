@@ -14,7 +14,7 @@ import {
 import type { Response } from 'express';
 import { SupabaseAuthGuard } from '../auth/auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
-import { FacebookService, FbPage } from './facebook.service';
+import { FacebookService, FbAccount, FbPage, FbSession } from './facebook.service';
 
 const FRONTEND_URL = process.env.FRONTEND_URL || '';
 
@@ -75,15 +75,12 @@ export class FacebookController {
 
     try {
       const ownerId = this.fb.verifyState(state);
-      const pages = await this.fb.pagesFromCode(code);
+      const session = await this.fb.pagesFromCode(code);
+      const value = JSON.stringify(session);
       await this.prisma.app_config.upsert({
         where: { key: pendingKey(ownerId) },
-        create: {
-          key: pendingKey(ownerId),
-          value: JSON.stringify(pages),
-          updated_at: new Date(),
-        },
-        update: { value: JSON.stringify(pages), updated_at: new Date() },
+        create: { key: pendingKey(ownerId), value, updated_at: new Date() },
+        update: { value, updated_at: new Date() },
       });
       return res.send(this.closeHtml(null));
     } catch (e: any) {
@@ -124,6 +121,18 @@ export class FacebookController {
   }
 
   /**
+   * Đọc bản tạm. Bản ghi trước đây chỉ là mảng page (chưa kèm nick) -> vẫn đọc
+   * được để user đang chọn dở lúc deploy không mất phiên.
+   */
+  private parsePending(value: string): FbSession {
+    const parsed = JSON.parse(value) as FbSession | FbPage[];
+    if (Array.isArray(parsed)) {
+      return { account: { id: '', name: '' } as FbAccount, pages: parsed };
+    }
+    return parsed;
+  }
+
+  /**
    * Danh sách page vừa đăng nhập được, để user chọn. KHÔNG trả access_token
    * về FE — chỉ id/tên + đã kết nối hay chưa.
    */
@@ -141,7 +150,7 @@ export class FacebookController {
       return { ok: true, pages: [] };
     }
 
-    const pages = JSON.parse(row.value) as FbPage[];
+    const { account, pages } = this.parsePending(row.value);
     const existing = await this.prisma.page_credentials.findMany({
       where: { owner_id: req.user.id, provider: 'facebook_graph' },
       select: { external_id: true },
@@ -151,6 +160,8 @@ export class FacebookController {
       ok: true,
       // Thời điểm lấy danh sách -> FE hiện ra để user biết đang xem bản cũ hay mới.
       fetched_at: row.updated_at.toISOString(),
+      // Nick FB của phiên này -> user thấy ngay khi FB trả về nhầm tài khoản cũ.
+      account,
       pages: pages.map((p) => ({
         id: p.id,
         name: p.name,
@@ -179,7 +190,7 @@ export class FacebookController {
     if (!row?.value) {
       throw new BadRequestException('Phiên kết nối đã hết, đăng nhập lại.');
     }
-    const all = JSON.parse(row.value) as FbPage[];
+    const all = this.parsePending(row.value).pages;
     const chosen = all.filter((p) => ids.includes(p.id));
     if (chosen.length === 0) {
       throw new BadRequestException('Page đã chọn không có trong phiên này.');

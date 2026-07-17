@@ -15,6 +15,11 @@ const SCOPES = [
 
 export type FbPage = { id: string; name: string; access_token: string };
 
+/** Tài khoản FB đã đăng nhập ở phiên đó (để user biết list là của nick nào). */
+export type FbAccount = { id: string; name: string };
+
+export type FbSession = { account: FbAccount; pages: FbPage[] };
+
 /**
  * OAuth Facebook + lấy Page access token.
  *
@@ -169,11 +174,25 @@ export class FacebookService {
     return out;
   }
 
-  /** Toàn bộ chuỗi callback: code -> danh sách page kèm token. */
-  async pagesFromCode(code: string): Promise<FbPage[]> {
+  /** Nick FB ứng với user token — FE hiện lên để biết list là của tài khoản nào. */
+  private async me(userToken: string): Promise<FbAccount> {
+    const res = await axios.get(`${GRAPH}/me`, {
+      params: { access_token: userToken, fields: 'id,name' },
+      timeout: 20000,
+    });
+    return { id: res.data?.id || '', name: res.data?.name || '(không rõ tên)' };
+  }
+
+  /** Toàn bộ chuỗi callback: code -> nick + danh sách page kèm token. */
+  async pagesFromCode(code: string): Promise<FbSession> {
     this.assertConfigured();
     const shortToken = await this.exchangeCode(code);
     const longToken = await this.toLongLived(shortToken);
-    return this.listPages(longToken);
+    const [account, pages] = await Promise.all([
+      this.me(longToken),
+      this.listPages(longToken),
+    ]);
+    this.log.log(`Phiên FB của ${account.name} (${account.id}).`);
+    return { account, pages };
   }
 }

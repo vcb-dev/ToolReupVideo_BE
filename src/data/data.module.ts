@@ -1,9 +1,12 @@
 import { Module } from '@nestjs/common';
 import { DataController } from './data.controller';
 import { AuthModule } from '../auth/auth.module';
+import { StorageModule } from '../storage/storage.module';
 
 @Module({
-  imports: [AuthModule], // SupabaseAuthGuard; PrismaService lấy từ PrismaModule (global)
+  // AuthModule: SupabaseAuthGuard. StorageModule: xoá file gốc kèm bản ghi.
+  // PrismaService lấy từ PrismaModule (global).
+  imports: [AuthModule, StorageModule],
   controllers: [DataController],
 })
 export class DataModule {}
