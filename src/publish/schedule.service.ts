@@ -82,15 +82,80 @@ export class ScheduleService {
       throw new Error(res.data?.error || 'AI đăng thất bại');
     }
 
+    const postId: string | null = res.data.post_id || null;
     await this.prisma.schedules.update({
       where: { id: schedule.id },
       data: {
         status: 'posted',
         posted_at: new Date(),
-        post_ref: JSON.stringify(res.data.result).slice(0, 300),
+        // Giữ ID bài để còn bình luận vào đúng bài (và tra lại sau này).
+        post_ref: postId || JSON.stringify(res.data.result).slice(0, 300),
         error: null,
       },
     });
     this.logger.log(`Đã đăng lịch ${schedule.id} lên ${target.platform}.`);
+
+    // Bài đã lên rồi -> bình luận affiliate là việc PHỤ, hỏng cũng không được
+    // làm lịch thành 'failed'.
+    await this.commentAffiliate(schedule, target, postId).catch((e) =>
+      this.logger.warn(`Bình luận affiliate lỗi (bỏ qua): ${e.message}`),
+    );
+  }
+
+  /**
+   * Đăng link affiliate thành BÌNH LUẬN dưới bài vừa đăng, rồi ghi kết quả vào
+   * `post_comments`. Chỉ làm được với page nối API Facebook và cần quyền
+   * `pages_manage_engagement` — chưa được duyệt thì ghi nhận 'failed' để user
+   * biết, KHÔNG ảnh hưởng bài đã đăng.
+   */
+  private async commentAffiliate(
+    schedule: any,
+    target: any,
+    postId: string | null,
+  ): Promise<void> {
+    if (!schedule.affiliate_id) return;
+
+    const link = await this.prisma.affiliate_links.findFirst({
+      where: { id: schedule.affiliate_id, owner_id: schedule.owner_id },
+      select: { url: true, name: true },
+    });
+    if (!link?.url) return;
+
+    const record = async (status: 'commented' | 'failed', error?: string) => {
+      await this.prisma.post_comments
+        .create({
+          data: {
+            owner_id: schedule.owner_id,
+            schedule_id: schedule.id,
+            affiliate_link_id: schedule.affiliate_id,
+            comment_text: link.url,
+            status,
+            commented_at: status === 'commented' ? new Date() : null,
+            error: error?.slice(0, 500) ?? null,
+          },
+        })
+        .catch(() => undefined);
+    };
+
+    if (!postId || target.provider !== 'facebook_graph' || !target.page_token) {
+      await record(
+        'failed',
+        'Chỉ bình luận được trên page nối API Facebook (và cần ID bài đăng).',
+      );
+      return;
+    }
+
+    const res = await axios.post(
+      `${AI_URL}/api/comment`,
+      { post_id: postId, page_token: target.page_token, message: link.url },
+      { timeout: 1000 * 60 },
+    );
+    if (res.data?.ok) {
+      await record('commented');
+      this.logger.log(`Đã bình luận affiliate vào bài ${postId}.`);
+    } else {
+      await record('failed', res.data?.error || 'AI bình luận thất bại');
+      this.logger.warn(`Bình luận affiliate thất bại: ${res.data?.error}`);
+    }
   }
 }

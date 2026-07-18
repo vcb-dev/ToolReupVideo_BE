@@ -11,6 +11,10 @@ const SCOPES = [
   'pages_show_list',
   'pages_manage_posts',
   'pages_read_engagement',
+  // Cần để ĐĂNG BÌNH LUẬN dưới bài (gắn link affiliate). Quyền này phải được
+  // Facebook duyệt qua App Review; chưa duyệt thì bài vẫn đăng, chỉ bình luận
+  // thất bại và được ghi lại trong post_comments.
+  'pages_manage_engagement',
 ];
 
 export type FbPage = { id: string; name: string; access_token: string };

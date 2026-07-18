@@ -20,6 +20,9 @@ import { isValidHhmm } from './vn-time';
 
 type RuleBody = {
   name?: string;
+  kind?: string; // 'produce' | 'post'
+  batch_size?: number;
+  stock_target?: number;
   weekdays?: number[];
   times?: string[];
   page_ids?: string[];
@@ -28,6 +31,7 @@ type RuleBody = {
   source_video_ids?: string[];
   video_config?: Record<string, any>;
   hashtags?: string;
+  ai_hashtags?: boolean;
   affiliate_id?: string | null;
   lead_minutes?: number;
   is_active?: boolean;
@@ -155,17 +159,58 @@ export class AutomationController {
       }
       out.times = [...new Set(ts)].sort();
     }
-    if (b.page_ids !== undefined || full) {
-      const ids = b.page_ids || [];
-      if (!ids.length) throw new BadRequestException('Chọn ít nhất 1 page đích.');
-      const owned = await this.prisma.pages.findMany({
-        where: { id: { in: ids }, owner_id: ownerId },
-        select: { id: true },
-      });
-      if (owned.length !== ids.length) {
-        throw new BadRequestException('Có page không tồn tại hoặc không thuộc bạn.');
+    // LOẠI quy tắc quyết định trường nào bắt buộc. Gộp với bản đang lưu để sửa
+    // quy tắc mà không gửi lại `kind` vẫn soi đúng luật.
+    const kind = b.kind ?? current?.kind ?? 'produce';
+    if (!['produce', 'post'].includes(kind)) {
+      throw new BadRequestException('Loại quy tắc không hợp lệ (produce | post).');
+    }
+    if (b.kind !== undefined || full) out.kind = kind;
+
+    if (kind === 'post') {
+      // ĐĂNG BÀI: bắt buộc page đích. `topics` là BỘ LỌC thành phẩm (rỗng = mọi
+      // chủ đề), không phải nguồn sản xuất -> không đụng pick_mode.
+      if (b.page_ids !== undefined || full) {
+        const ids = b.page_ids || [];
+        if (!ids.length) throw new BadRequestException('Chọn ít nhất 1 page đích.');
+        const owned = await this.prisma.pages.findMany({
+          where: { id: { in: ids }, owner_id: ownerId },
+          select: { id: true },
+        });
+        if (owned.length !== ids.length) {
+          throw new BadRequestException('Có page không tồn tại hoặc không thuộc bạn.');
+        }
+        out.page_ids = ids;
       }
-      out.page_ids = ids;
+      if (b.topics !== undefined || full) {
+        out.topics = [...new Set(b.topics || [])];
+      }
+      if (full) {
+        out.pick_mode = 'any';
+        out.source_video_ids = [];
+      }
+      if (b.hashtags !== undefined) out.hashtags = (b.hashtags || '').trim() || null;
+      if (b.ai_hashtags !== undefined) out.ai_hashtags = !!b.ai_hashtags;
+      if (b.affiliate_id !== undefined) out.affiliate_id = b.affiliate_id || null;
+      if (b.is_active !== undefined) out.is_active = !!b.is_active;
+      return out;
+    }
+
+    // ---- SẢN XUẤT: không cần page, nhưng phải biết lấy video nguồn từ đâu ----
+    if (full) out.page_ids = [];
+    if (b.batch_size !== undefined || full) {
+      const n = Number(b.batch_size ?? 1);
+      if (!Number.isInteger(n) || n < 1 || n > 20) {
+        throw new BadRequestException('Số video mỗi lượt phải từ 1 đến 20.');
+      }
+      out.batch_size = n;
+    }
+    if (b.stock_target !== undefined || full) {
+      const n = Number(b.stock_target ?? 10);
+      if (!Number.isInteger(n) || n < 1 || n > 500) {
+        throw new BadRequestException('Trần kho phải từ 1 đến 500 video.');
+      }
+      out.stock_target = n;
     }
     // Nguồn video. Kiểm theo pick_mode SAU KHI gộp với giá trị đang lưu: sửa
     // quy tắc mà chỉ gửi mỗi `topics` thì vẫn phải soi đúng mode hiện tại.
@@ -206,17 +251,7 @@ export class AutomationController {
       }
     }
 
-    if (b.lead_minutes !== undefined) {
-      const lead = Number(b.lead_minutes);
-      // Trên 12 tiếng thì cửa sổ quét 2 ngày trong cron không còn đủ phủ.
-      if (!Number.isInteger(lead) || lead < 5 || lead > 720) {
-        throw new BadRequestException('Sản xuất trước phải từ 5 đến 720 phút.');
-      }
-      out.lead_minutes = lead;
-    }
     if (b.video_config !== undefined) out.video_config = b.video_config ?? {};
-    if (b.hashtags !== undefined) out.hashtags = (b.hashtags || '').trim() || null;
-    if (b.affiliate_id !== undefined) out.affiliate_id = b.affiliate_id || null;
     if (b.is_active !== undefined) out.is_active = !!b.is_active;
 
     return out;

@@ -200,7 +200,8 @@ model processed_videos {
   created_at      DateTime     @default(now()) @db.Timestamptz(6)
   updated_at      DateTime     @default(now()) @db.Timestamptz(6)
 
-  source source_videos @relation(fields: [source_video_id], references: [id], onDelete: Cascade)
+  source    source_videos @relation(fields: [source_video_id], references: [id], onDelete: Cascade)
+  schedules schedules[]
 
   @@map("processed_videos")
 }
@@ -234,10 +235,13 @@ model schedules {
   error              String?
   /// Quy tắc "Tự động" đã sinh ra lịch này; null = user tự thêm tay.
   rule_id            String?         @db.Uuid
+  /// Link affiliate sẽ đăng thành BÌNH LUẬN dưới bài (không nối vào caption).
+  affiliate_id       String?         @db.Uuid
   created_at         DateTime        @default(now()) @db.Timestamptz(6)
   updated_at         DateTime        @default(now()) @db.Timestamptz(6)
 
-  rule automation_rules? @relation(fields: [rule_id], references: [id])
+  rule      automation_rules? @relation(fields: [rule_id], references: [id])
+  processed processed_videos  @relation(fields: [processed_video_id], references: [id], onDelete: Cascade)
 
   @@index([rule_id])
   @@map("schedules")
@@ -249,6 +253,13 @@ model automation_rules {
   id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   owner_id     String   @db.Uuid
   name         String
+  /// 'produce' = tự sản xuất để sẵn kho | 'post' = tự đăng thành phẩm có sẵn.
+  kind         String   @default("produce")
+  /// produce: số video mỗi lượt + trần kho thành phẩm (đủ rồi thì bỏ lượt).
+  batch_size   Int      @default(1)
+  stock_target Int      @default(10)
+  /// Khung giờ đã xử lý gần nhất — chống cron chạy trùng cùng 1 khung.
+  last_slot_at DateTime? @db.Timestamptz(6)
   /// 1=Thứ 2 ... 7=Chủ nhật (ISO).
   weekdays     Int[]    @db.SmallInt
   /// Giờ VN dạng 'HH:MM'.
