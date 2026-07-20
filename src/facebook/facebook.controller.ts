@@ -16,7 +16,13 @@ import { SupabaseAuthGuard } from '../auth/auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { FacebookService, FbAccount, FbPage, FbSession } from './facebook.service';
 
-const FRONTEND_URL = process.env.FRONTEND_URL || '';
+// Origin FE để giới hạn postMessage sau OAuth. Ưu tiên FRONTEND_URL nếu có,
+// nếu không thì lấy domain đầu tiên trong CORS_ORIGINS (thường là FE chính) —
+// nhờ vậy trên production chỉ cần khai báo CORS_ORIGINS, khỏi set thêm biến.
+const FRONTEND_URL =
+  process.env.FRONTEND_URL ||
+  (process.env.CORS_ORIGINS || '').split(',')[0].trim() ||
+  '';
 
 /** Khoá lưu tạm danh sách page vừa lấy được sau khi đăng nhập (kèm token). */
 const pendingKey = (ownerId: string) => `fb_pending:${ownerId}`;
