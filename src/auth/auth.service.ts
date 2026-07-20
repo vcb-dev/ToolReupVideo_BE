@@ -24,7 +24,9 @@ export class AuthService implements OnModuleInit {
   private readonly supabaseUrl = process.env.SUPABASE_URL;
   private readonly anonKey = process.env.SUPABASE_ANON_KEY;
   private readonly serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  private readonly jwtSecret = process.env.SUPABASE_JWT_SECRET;
+  // Lưu ý: giá trị này PHẢI khớp JWT Secret của Supabase
+  // (Dashboard -> Settings -> API -> JWT Secret) — không được tự sinh chuỗi mới.
+  private readonly jwtSecret = process.env.JWT_SECRET;
   // Chỉ log 1 lần khi phải rơi về gọi mạng, để không spam.
   private warnedLocalFail = false;
 
@@ -185,7 +187,7 @@ export class AuthService implements OnModuleInit {
   /**
    * Xác thực token -> {id, email, is_admin}.
    *
-   * Ưu tiên VERIFY TẠI CHỖ bằng SUPABASE_JWT_SECRET (~0ms, không gọi mạng) —
+   * Ưu tiên VERIFY TẠI CHỖ bằng JWT_SECRET (~0ms, không gọi mạng) —
    * đây là điểm chậm nhất cũ: mỗi request tốn ~340ms hỏi Supabase. Nếu verify
    * tại chỗ hỏng vì BẤT KỲ lý do gì (chưa cấu hình secret, project dùng khoá bất
    * đối xứng, claim lạ...) thì TỰ RƠI VỀ gọi mạng như cũ — không bao giờ khoá
@@ -249,7 +251,7 @@ export class AuthService implements OnModuleInit {
         this.warnedLocalFail = true;
         this.logger.warn(
           `Verify JWT tại chỗ không dùng được (${e?.message}) -> tạm rơi về gọi mạng. ` +
-            `Kiểm tra SUPABASE_JWT_SECRET.`,
+            `Kiểm tra JWT_SECRET (phải khớp JWT Secret của Supabase).`,
         );
       }
       return null;
