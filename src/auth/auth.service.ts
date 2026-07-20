@@ -9,12 +9,15 @@ import {
 } from '@nestjs/common';
 import axios from 'axios';
 import * as jwt from 'jsonwebtoken';
+import * as crypto from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 
 /** Key trong bảng app_config chứa danh sách email admin (ngăn cách bởi dấu phẩy). */
 const ADMIN_CONFIG_KEY = 'admin_emails';
 /** Chu kỳ làm mới danh sách admin từ DB (để thêm/bớt admin không cần deploy lại). */
 const ADMIN_REFRESH_MS = 60_000;
+/** Khoảng cách tối thiểu giữa 2 lần tải JWKS (chặn spam khi gặp kid lạ liên tục). */
+const JWKS_MIN_REFETCH_MS = 60_000;
 
 @Injectable()
 export class AuthService implements OnModuleInit {
@@ -29,6 +32,9 @@ export class AuthService implements OnModuleInit {
   private readonly jwtSecret = process.env.JWT_SECRET;
   // Chỉ log 1 lần khi phải rơi về gọi mạng, để không spam.
   private warnedLocalFail = false;
+  // Cache public key của Supabase theo kid (dùng khi project bật khoá bất đối xứng).
+  private readonly jwks = new Map<string, crypto.KeyObject>();
+  private jwksFetchedAt = 0;
 
   // Danh sách admin hiện tại = ADMIN_EMAILS (env, admin gốc) ∪ app_config.admin_emails (DB).
   // Cache trong RAM để isAdmin() vẫn đồng bộ, không query DB mỗi lần gọi.
@@ -196,7 +202,7 @@ export class AuthService implements OnModuleInit {
   async getUser(token: string) {
     this.ensureConfig();
 
-    const local = this.verifyLocally(token);
+    const local = await this.verifyLocally(token);
     if (local) return local;
 
     // Fallback: hỏi thẳng Supabase (đường cũ, luôn đúng nhưng chậm).
@@ -222,13 +228,35 @@ export class AuthService implements OnModuleInit {
    * Token hết hạn / sai chữ ký -> ném UnauthorizedException (từ chối luôn, KHÔNG
    * fallback, vì gọi mạng cũng sẽ từ chối).
    */
-  private verifyLocally(token: string):
-    | { id: string; email?: string; is_admin: boolean }
-    | null {
-    if (!this.jwtSecret) return null; // chưa cấu hình -> để fallback
+  private async verifyLocally(
+    token: string,
+  ): Promise<{ id: string; email?: string; is_admin: boolean } | null> {
+    // Chọn khoá theo `alg` GHI TRONG HEADER của token, không đoán:
+    //   HS256          -> JWT_SECRET (khoá đối xứng, kiểu cũ của Supabase)
+    //   ES256/RS256... -> public key lấy từ JWKS (Supabase "JWT signing keys")
+    // Trước đây code ép cứng HS256, nên project bật khoá bất đối xứng sẽ nhận
+    // 'invalid algorithm' và bị từ chối nhầm -> 401 toàn bộ.
+    let header: any;
     try {
-      const payload = jwt.verify(token, this.jwtSecret, {
-        algorithms: ['HS256'],
+      header = (jwt.decode(token, { complete: true }) as any)?.header;
+    } catch {
+      return null;
+    }
+    if (!header?.alg) return null;
+
+    let key: jwt.Secret | crypto.KeyObject;
+    if (header.alg === 'HS256') {
+      if (!this.jwtSecret) return null; // chưa cấu hình -> để fallback
+      key = this.jwtSecret;
+    } else {
+      const pub = await this.jwksKey(header.kid);
+      if (!pub) return null; // không lấy được khoá công khai -> để fallback
+      key = pub;
+    }
+
+    try {
+      const payload = jwt.verify(token, key as any, {
+        algorithms: [header.alg],
       }) as jwt.JwtPayload;
       if (!payload.sub) return null; // claim lạ -> fallback cho chắc
       return {
@@ -237,16 +265,17 @@ export class AuthService implements OnModuleInit {
         is_admin: this.isAdmin(payload.email as string | undefined),
       };
     } catch (e: any) {
-      // Hết hạn / sai chữ ký = token thực sự không hợp lệ -> từ chối, khỏi fallback.
-      if (
+      // CHỈ từ chối thẳng khi token thực sự hỏng: hết hạn hoặc sai chữ ký.
+      // Mọi lỗi khác (khoá/thuật toán không khớp cấu hình) -> rơi về gọi mạng,
+      // để một sai sót cấu hình không khoá toàn bộ người dùng ra ngoài.
+      const bad =
         e?.name === 'TokenExpiredError' ||
-        e?.name === 'JsonWebTokenError'
-      ) {
+        /invalid signature/i.test(e?.message || '');
+      if (bad) {
         throw new UnauthorizedException(
           'Phiên đăng nhập không hợp lệ hoặc đã hết hạn',
         );
       }
-      // Lỗi khác (vd project dùng khoá bất đối xứng) -> để fallback gọi mạng.
       if (!this.warnedLocalFail) {
         this.warnedLocalFail = true;
         this.logger.warn(
@@ -256,6 +285,41 @@ export class AuthService implements OnModuleInit {
       }
       return null;
     }
+  }
+
+  /**
+   * Lấy public key theo `kid` từ JWKS của Supabase (có cache).
+   * Chỉ tải lại khi gặp kid chưa biết, và không tải quá dày để tránh spam.
+   */
+  private async jwksKey(kid?: string): Promise<crypto.KeyObject | null> {
+    if (!kid) return null;
+    const cached = this.jwks.get(kid);
+    if (cached) return cached;
+    if (Date.now() - this.jwksFetchedAt < JWKS_MIN_REFETCH_MS) return null;
+    this.jwksFetchedAt = Date.now();
+    try {
+      const res = await axios.get(
+        `${this.supabaseUrl}/auth/v1/.well-known/jwks.json`,
+        { timeout: 5000 },
+      );
+      const keys: any[] = res.data?.keys || [];
+      this.jwks.clear();
+      for (const k of keys) {
+        if (!k?.kid) continue;
+        try {
+          this.jwks.set(
+            k.kid,
+            crypto.createPublicKey({ key: k, format: 'jwk' }),
+          );
+        } catch {
+          // khoá lạ -> bỏ qua, các khoá còn lại vẫn dùng được
+        }
+      }
+      this.logger.log(`Đã nạp ${this.jwks.size} khoá công khai từ JWKS.`);
+    } catch (e: any) {
+      this.logger.warn(`Không tải được JWKS (${e?.message}) -> rơi về gọi mạng.`);
+    }
+    return this.jwks.get(kid) || null;
   }
 
   // ---- Quản lý tài khoản nhân viên (Supabase Admin API, cần service role) ----
