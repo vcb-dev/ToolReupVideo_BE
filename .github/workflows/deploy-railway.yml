@@ -63,7 +63,7 @@ jobs:
 
     env:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-      RAILWAY_SERVICE: ${{ secrets.RAILWAY_SERVICE_BE }}
+      RAILWAY_SERVICE: ${{ secrets.RAILWAY_SERVICE_API }}
 
     steps:
       - name: Install Railway CLI
@@ -76,7 +76,7 @@ jobs:
             exit 1
           fi
           if [ -z "$RAILWAY_SERVICE" ]; then
-            echo "::error::Thiếu secret RAILWAY_SERVICE_BE"
+            echo "::error::Thiếu secret RAILWAY_SERVICE_API"
             exit 1
           fi
           echo "Railway secrets OK"
