@@ -64,7 +64,9 @@ export class ProduceController {
       const creds = await this.prisma.page_credentials.findMany({
         where: { page_id: { in: pages.map((p) => p.id) }, owner_id: ownerId },
       });
-      const credByPage = new Map(creds.map((cr) => [cr.page_id, cr]));
+      const credByPage = new Map<string, typeof creds[number]>(
+        creds.map((cr) => [cr.page_id, cr]),
+      );
       c.post_targets = pages.map((p) => {
         const cr = credByPage.get(p.id);
         if (p.provider === 'facebook_graph' && cr?.access_token) {
