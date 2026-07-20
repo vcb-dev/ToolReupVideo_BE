@@ -7,6 +7,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import axios from 'axios';
+import * as jwt from 'jsonwebtoken';
 
 @Injectable()
 export class AuthService {
@@ -14,6 +15,9 @@ export class AuthService {
   private readonly supabaseUrl = process.env.SUPABASE_URL;
   private readonly anonKey = process.env.SUPABASE_ANON_KEY;
   private readonly serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  private readonly jwtSecret = process.env.SUPABASE_JWT_SECRET;
+  // Chỉ log 1 lần khi phải rơi về gọi mạng, để không spam.
+  private warnedLocalFail = false;
 
   private ensureConfig() {
     if (!this.supabaseUrl || !this.anonKey) {
@@ -130,24 +134,77 @@ export class AuthService {
   }
 
   // Xác minh access_token với Supabase. Hợp lệ -> trả về thông tin user.
+  /**
+   * Xác thực token -> {id, email, is_admin}.
+   *
+   * Ưu tiên VERIFY TẠI CHỖ bằng SUPABASE_JWT_SECRET (~0ms, không gọi mạng) —
+   * đây là điểm chậm nhất cũ: mỗi request tốn ~340ms hỏi Supabase. Nếu verify
+   * tại chỗ hỏng vì BẤT KỲ lý do gì (chưa cấu hình secret, project dùng khoá bất
+   * đối xứng, claim lạ...) thì TỰ RƠI VỀ gọi mạng như cũ — không bao giờ khoá
+   * nhầm user ra. Token HẾT HẠN hoặc SAI CHỮ KÝ vẫn bị từ chối đúng đắn.
+   */
   async getUser(token: string) {
     this.ensureConfig();
+
+    const local = this.verifyLocally(token);
+    if (local) return local;
+
+    // Fallback: hỏi thẳng Supabase (đường cũ, luôn đúng nhưng chậm).
     try {
       const res = await axios.get(`${this.supabaseUrl}/auth/v1/user`, {
-        headers: {
-          apikey: this.anonKey,
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { apikey: this.anonKey, Authorization: `Bearer ${token}` },
       });
       return {
         id: res.data.id,
         email: res.data.email,
         is_admin: this.isAdmin(res.data.email),
       };
-    } catch (error) {
+    } catch {
       throw new UnauthorizedException(
         'Phiên đăng nhập không hợp lệ hoặc đã hết hạn',
       );
+    }
+  }
+
+  /**
+   * Verify chữ ký + hạn token bằng JWT secret. Trả user nếu HỢP LỆ; null nếu
+   * KHÔNG verify tại chỗ được (thiếu secret / khác thuật toán) để caller fallback.
+   * Token hết hạn / sai chữ ký -> ném UnauthorizedException (từ chối luôn, KHÔNG
+   * fallback, vì gọi mạng cũng sẽ từ chối).
+   */
+  private verifyLocally(token: string):
+    | { id: string; email?: string; is_admin: boolean }
+    | null {
+    if (!this.jwtSecret) return null; // chưa cấu hình -> để fallback
+    try {
+      const payload = jwt.verify(token, this.jwtSecret, {
+        algorithms: ['HS256'],
+      }) as jwt.JwtPayload;
+      if (!payload.sub) return null; // claim lạ -> fallback cho chắc
+      return {
+        id: String(payload.sub),
+        email: payload.email as string | undefined,
+        is_admin: this.isAdmin(payload.email as string | undefined),
+      };
+    } catch (e: any) {
+      // Hết hạn / sai chữ ký = token thực sự không hợp lệ -> từ chối, khỏi fallback.
+      if (
+        e?.name === 'TokenExpiredError' ||
+        e?.name === 'JsonWebTokenError'
+      ) {
+        throw new UnauthorizedException(
+          'Phiên đăng nhập không hợp lệ hoặc đã hết hạn',
+        );
+      }
+      // Lỗi khác (vd project dùng khoá bất đối xứng) -> để fallback gọi mạng.
+      if (!this.warnedLocalFail) {
+        this.warnedLocalFail = true;
+        this.logger.warn(
+          `Verify JWT tại chỗ không dùng được (${e?.message}) -> tạm rơi về gọi mạng. ` +
+            `Kiểm tra SUPABASE_JWT_SECRET.`,
+        );
+      }
+      return null;
     }
   }
 
