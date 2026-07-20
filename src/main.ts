@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
-import { Prisma } from '@prisma/client';
+import { Decimal } from '@prisma/client/runtime/library';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 
@@ -9,7 +9,7 @@ import { AppModule } from './app.module';
 (BigInt.prototype as any).toJSON = function () {
   return Number(this);
 };
-(Prisma.Decimal.prototype as any).toJSON = function () {
+(Decimal.prototype as any).toJSON = function () {
   return this.toNumber();
 };
 

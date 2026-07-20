@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { HealthController } from './health.controller';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProxyModule } from './proxy/proxy.module';
 import { AuthModule } from './auth/auth.module';
@@ -27,5 +28,6 @@ import { StorageModule } from './storage/storage.module';
     StatsModule,
     StorageModule,
   ],
+  controllers: [HealthController],
 })
 export class AppModule {}

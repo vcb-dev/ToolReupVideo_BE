@@ -1,6 +1,7 @@
 node_modules
 dist
 .git
+.github
 .gitignore
 .env
 .env.*
@@ -9,5 +10,7 @@ npm-debug.log*
 Dockerfile
 .dockerignore
 README.md
+railway.toml
 test
 *.spec.ts
+tsconfig.tsbuildinfo
