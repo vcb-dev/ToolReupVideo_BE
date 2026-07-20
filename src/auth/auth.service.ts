@@ -3,14 +3,23 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
+  OnModuleInit,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import axios from 'axios';
 import * as jwt from 'jsonwebtoken';
+import { PrismaService } from '../prisma/prisma.service';
+
+/** Key trong bảng app_config chứa danh sách email admin (ngăn cách bởi dấu phẩy). */
+const ADMIN_CONFIG_KEY = 'admin_emails';
+/** Chu kỳ làm mới danh sách admin từ DB (để thêm/bớt admin không cần deploy lại). */
+const ADMIN_REFRESH_MS = 60_000;
 
 @Injectable()
-export class AuthService {
+export class AuthService implements OnModuleInit {
+  constructor(private readonly prisma: PrismaService) {}
+
   private readonly logger = new Logger(AuthService.name);
   private readonly supabaseUrl = process.env.SUPABASE_URL;
   private readonly anonKey = process.env.SUPABASE_ANON_KEY;
@@ -18,6 +27,10 @@ export class AuthService {
   private readonly jwtSecret = process.env.SUPABASE_JWT_SECRET;
   // Chỉ log 1 lần khi phải rơi về gọi mạng, để không spam.
   private warnedLocalFail = false;
+
+  // Danh sách admin hiện tại = ADMIN_EMAILS (env, admin gốc) ∪ app_config.admin_emails (DB).
+  // Cache trong RAM để isAdmin() vẫn đồng bộ, không query DB mỗi lần gọi.
+  private adminSet = this.envAdmins();
 
   private ensureConfig() {
     if (!this.supabaseUrl || !this.anonKey) {
@@ -27,14 +40,49 @@ export class AuthService {
     }
   }
 
-  // Email admin (được phép tạo/xóa tài khoản), khai báo trong ADMIN_EMAILS (ngăn cách bởi dấu phẩy).
+  async onModuleInit() {
+    await this.refreshAdmins();
+    // Làm mới định kỳ để thay đổi admin trong DB tự có hiệu lực (không cần deploy lại).
+    const t = setInterval(() => {
+      void this.refreshAdmins();
+    }, ADMIN_REFRESH_MS);
+    // Không giữ tiến trình sống chỉ vì timer này.
+    if (typeof t.unref === 'function') t.unref();
+  }
+
+  /** Admin gốc lấy từ biến môi trường ADMIN_EMAILS — luôn có, đảm bảo không bao giờ "trống admin". */
+  private envAdmins(): Set<string> {
+    return new Set(
+      (process.env.ADMIN_EMAILS || '')
+        .split(',')
+        .map((e) => e.trim().toLowerCase())
+        .filter(Boolean),
+    );
+  }
+
+  /** Nạp lại danh sách admin = env (bootstrap) ∪ app_config.admin_emails (DB). */
+  private async refreshAdmins(): Promise<void> {
+    const set = this.envAdmins();
+    try {
+      const row = await this.prisma.app_config.findUnique({
+        where: { key: ADMIN_CONFIG_KEY },
+      });
+      for (const e of (row?.value || '')
+        .split(',')
+        .map((x) => x.trim().toLowerCase())
+        .filter(Boolean)) {
+        set.add(e);
+      }
+    } catch {
+      // DB chưa sẵn sàng -> vẫn dùng danh sách env.
+    }
+    this.adminSet = set;
+  }
+
+  // Email admin (được phép tạo/xóa tài khoản). Nguồn: ADMIN_EMAILS (env) + app_config (DB).
   isAdmin(email?: string): boolean {
     if (!email) return false;
-    const admins = (process.env.ADMIN_EMAILS || '')
-      .split(',')
-      .map((e) => e.trim().toLowerCase())
-      .filter(Boolean);
-    return admins.includes(email.toLowerCase());
+    return this.adminSet.has(email.toLowerCase());
   }
 
   private ensureAdminApi() {

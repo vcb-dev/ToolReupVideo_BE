@@ -4,7 +4,9 @@ import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
 
 const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
-const DEFAULT_MAX = Number(process.env.CRAWL_MAX_PER_CHANNEL || 10);
+// Số video tối đa lấy mỗi kênh khi cào tự động. Chỉ là mặc định, không phải
+// secret nên để hằng số trong code thay vì biến môi trường.
+const DEFAULT_MAX = 10;
 
 type Channel = {
   id: string;
