@@ -19,13 +19,61 @@ env:
   IMAGE: viejhaf/toolreup-video-be:latest
 
 jobs:
+  migrate:
+    name: DB migrate deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Migrate deploy
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::Thiếu GitHub secret DATABASE_URL"
+            exit 1
+          fi
+          if [ -z "$DIRECT_URL" ]; then
+            export DIRECT_URL="$(node -e '
+              const u = process.env.DATABASE_URL;
+              try {
+                const x = new URL(u);
+                if (x.port === "6543") x.port = "5432";
+                x.searchParams.delete("pgbouncer");
+                x.searchParams.delete("connection_limit");
+                process.stdout.write(x.toString());
+              } catch {
+                process.stdout.write(u);
+              }
+            ')"
+            echo "DIRECT_URL không có secret — dùng bản derive từ DATABASE_URL"
+          fi
+          npm run db:migrate:deploy
+
   build-and-push:
     name: Build & Push Docker Hub
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    needs: [migrate]
     if: |
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_docker_push != 'true')
+      always() &&
+      needs.migrate.result == 'success' &&
+      (github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_docker_push != 'true'))
 
     steps:
       - name: Checkout
@@ -55,9 +103,10 @@ jobs:
     name: Redeploy Railway
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [build-and-push]
+    needs: [migrate, build-and-push]
     if: |
       always() &&
+      needs.migrate.result == 'success' &&
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
       (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
 
