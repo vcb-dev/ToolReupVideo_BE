@@ -21,8 +21,14 @@ export class CrawlService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Gọi AI service cào 1 kênh -> trả về bản ghi source_videos (gắn owner/channel). */
-  private async crawlFromAi(channel: Channel, max: number): Promise<any[]> {
+  /**
+   * Gọi AI service cào 1 kênh -> bản ghi source_videos (gắn owner/channel) +
+   * meta kênh (avatar/tên/follow/số video/bio) để làm giàu bảng channels.
+   */
+  private async crawlFromAi(
+    channel: Channel,
+    max: number,
+  ): Promise<{ rows: any[]; meta: any }> {
     const res = await axios.post(
       `${AI_URL}/api/crawl`,
       { platform: channel.platform, user: channel.channel_ref, max },
@@ -31,7 +37,7 @@ export class CrawlService {
     if (!res.data?.ok) {
       throw new Error(res.data?.error || 'AI service cào thất bại');
     }
-    return (res.data.videos || []).map((v: any) => ({
+    const rows = (res.data.videos || []).map((v: any) => ({
       platform: v.platform,
       platform_video_id: v.platform_video_id,
       descr: v.descr,
@@ -42,6 +48,19 @@ export class CrawlService {
       channel_id: channel.id,
       status: 'new',
     }));
+    return { rows, meta: res.data.channel || {} };
+  }
+
+  /** Chỉ giữ các khoá meta có giá trị -> không ghi đè dữ liệu cũ bằng rỗng/0. */
+  private channelMetaUpdate(meta: any): Record<string, any> {
+    const data: Record<string, any> = {};
+    if (meta?.display_name) data.display_name = meta.display_name;
+    if (meta?.avatar_url) data.avatar_url = meta.avatar_url;
+    if (meta?.follower_count) data.follower_count = Number(meta.follower_count);
+    if (meta?.video_count) data.video_count = Number(meta.video_count);
+    if (meta?.bio) data.bio = meta.bio;
+    if (meta?.topic) data.topic = meta.topic;
+    return data;
   }
 
   /**
@@ -52,14 +71,14 @@ export class CrawlService {
     channel: Channel,
     max = DEFAULT_MAX,
   ): Promise<{ inserted: number }> {
-    const rows = await this.crawlFromAi(channel, max);
+    const { rows, meta } = await this.crawlFromAi(channel, max);
     const res = await this.prisma.source_videos.createMany({
       data: rows,
       skipDuplicates: true,
     });
     await this.prisma.channels.update({
       where: { id: channel.id },
-      data: { last_crawled_at: new Date() },
+      data: { last_crawled_at: new Date(), ...this.channelMetaUpdate(meta) },
     });
     return { inserted: res.count };
   }
