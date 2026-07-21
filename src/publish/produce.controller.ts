@@ -294,6 +294,26 @@ export class ProduceController {
     }
   }
 
+  /**
+   * Huỷ tác vụ đang chạy ở AI (sản xuất/đăng). AI bật cờ cancel, job dừng êm ở
+   * ranh giới bước. Khai báo TRƯỚC route ':sourceVideoId' để 'cancel' không bị
+   * hiểu nhầm là id.
+   */
+  @Post('cancel')
+  @HttpCode(HttpStatus.OK)
+  async cancel() {
+    try {
+      const res = await axios.post(
+        `${AI_URL}/api/cancel`,
+        {},
+        { timeout: 1000 * 15 },
+      );
+      return { ok: res.data?.ok !== false, note: res.data?.note };
+    } catch (e: any) {
+      return { ok: false, error: e.message };
+    }
+  }
+
   @Post(':sourceVideoId')
   @HttpCode(HttpStatus.OK)
   async produce(@Param('sourceVideoId') id: string, @Req() req: any) {

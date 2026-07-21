@@ -140,13 +140,22 @@ export class AutomationService {
   /** Sản xuất 1 video nguồn -> ghi processed_videos (vào kho thành phẩm). */
   private async produceOne(rule: any, sv: any): Promise<void> {
     this.logger.log(`Quy tắc "${rule.name}": đang sản xuất ${sv.platform_video_id}...`);
+    // Tự động không có người vẽ khung che -> mặc định để Gemini TỰ DÒ khung chữ
+    // gốc + ghi phụ đề Việt. Đặt trước rule.video_config nên nếu sau này UI quy
+    // tắc cho chỉnh các cờ này thì giá trị của rule vẫn thắng.
+    const config = {
+      cover_text: true,
+      cover_detect: true,
+      subtitle_enabled: true,
+      ...(rule.video_config || {}),
+    };
     const res = await axios.post(
       `${AI_URL}/api/produce`,
       {
         video_id: sv.platform_video_id,
         drive_id: sv.drive_id,
         desc: sv.descr,
-        config: rule.video_config || {},
+        config,
       },
       { timeout: 1000 * 60 * 30 },
     );
