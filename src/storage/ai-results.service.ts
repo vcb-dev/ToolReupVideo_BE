@@ -5,7 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 
 const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
 /** Nhịp lấy kết quả từ AI. Đủ nhanh để UI thấy gần như tức thì, đủ thưa để không spam. */
-const DRAIN_MS = 10_000;
+const DRAIN_MS = 3_000;
 
 /**
  * Lấy kết quả job từ AI về ghi DB.

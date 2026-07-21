@@ -94,6 +94,11 @@ model channels {
   platform        platform_source
   channel_ref     String
   display_name    String?
+  avatar_url      String?
+  follower_count  Int?
+  video_count     Int?
+  bio             String?
+  topic           String?
   is_monitored    Boolean         @default(false)
   crawl_freq      String          @default("daily")
   last_crawled_at DateTime?       @db.Timestamptz(6)
