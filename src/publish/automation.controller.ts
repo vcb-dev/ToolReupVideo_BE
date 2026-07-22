@@ -20,15 +20,17 @@ import { isValidHhmm } from './vn-time';
 
 type RuleBody = {
   name?: string;
-  kind?: string; // 'produce' | 'post'
+  kind?: string; // 'produce' | 'post' | 'reup'
   batch_size?: number;
   stock_target?: number;
+  recency_days?: number; // reup: chỉ lấy video đăng trong N ngày gần nhất
   weekdays?: number[];
   times?: string[];
   page_ids?: string[];
   pick_mode?: string;
   topics?: string[];
   source_video_ids?: string[];
+  source_channel_id?: string | null; // pick_mode='channel': kênh nguồn đã theo dõi
   video_config?: Record<string, any>;
   hashtags?: string;
   ai_hashtags?: boolean;
@@ -162,8 +164,10 @@ export class AutomationController {
     // LOẠI quy tắc quyết định trường nào bắt buộc. Gộp với bản đang lưu để sửa
     // quy tắc mà không gửi lại `kind` vẫn soi đúng luật.
     const kind = b.kind ?? current?.kind ?? 'produce';
-    if (!['produce', 'post'].includes(kind)) {
-      throw new BadRequestException('Loại quy tắc không hợp lệ (produce | post).');
+    if (!['produce', 'post', 'reup'].includes(kind)) {
+      throw new BadRequestException(
+        'Loại quy tắc không hợp lệ (produce | post | reup).',
+      );
     }
     if (b.kind !== undefined || full) out.kind = kind;
 
@@ -196,6 +200,50 @@ export class AutomationController {
       return out;
     }
 
+    if (kind === 'reup') {
+      // REUP TRỌN GÓI: nguồn + cấu hình sản xuất (như produce) + page đích +
+      // hashtag/affiliate (như post) + cửa sổ recency_days. Đăng ngay nên KHÔNG
+      // dùng stock_target.
+      // -- Page đích (bắt buộc) --
+      if (b.page_ids !== undefined || full) {
+        const ids = b.page_ids || [];
+        if (!ids.length) throw new BadRequestException('Chọn ít nhất 1 page đích.');
+        const owned = await this.prisma.pages.findMany({
+          where: { id: { in: ids }, owner_id: ownerId },
+          select: { id: true },
+        });
+        if (owned.length !== ids.length) {
+          throw new BadRequestException('Có page không tồn tại hoặc không thuộc bạn.');
+        }
+        out.page_ids = ids;
+      }
+      // -- Cửa sổ "video mới nhất trong N ngày" (bắt buộc) --
+      if (b.recency_days !== undefined || full) {
+        const n = Number(b.recency_days ?? current?.recency_days ?? NaN);
+        if (!Number.isInteger(n) || n < 1 || n > 3650) {
+          throw new BadRequestException('Số ngày phải từ 1 đến 3650.');
+        }
+        out.recency_days = n;
+      }
+      // -- Nguồn video (any/topics/videos/channel như produce) --
+      await this.applySourceScope(b, current, ownerId, full, out);
+      // -- Số video mỗi lượt (tuỳ chọn) --
+      if (b.batch_size !== undefined || full) {
+        const n = Number(b.batch_size ?? 1);
+        if (!Number.isInteger(n) || n < 1 || n > 20) {
+          throw new BadRequestException('Số video mỗi lượt phải từ 1 đến 20.');
+        }
+        out.batch_size = n;
+      }
+      // -- Cấu hình sản xuất + meta đăng --
+      if (b.video_config !== undefined) out.video_config = b.video_config ?? {};
+      if (b.hashtags !== undefined) out.hashtags = (b.hashtags || '').trim() || null;
+      if (b.ai_hashtags !== undefined) out.ai_hashtags = !!b.ai_hashtags;
+      if (b.affiliate_id !== undefined) out.affiliate_id = b.affiliate_id || null;
+      if (b.is_active !== undefined) out.is_active = !!b.is_active;
+      return out;
+    }
+
     // ---- SẢN XUẤT: không cần page, nhưng phải biết lấy video nguồn từ đâu ----
     if (full) out.page_ids = [];
     if (b.batch_size !== undefined || full) {
@@ -212,48 +260,83 @@ export class AutomationController {
       }
       out.stock_target = n;
     }
-    // Nguồn video. Kiểm theo pick_mode SAU KHI gộp với giá trị đang lưu: sửa
-    // quy tắc mà chỉ gửi mỗi `topics` thì vẫn phải soi đúng mode hiện tại.
-    if (
-      b.pick_mode !== undefined ||
-      b.topics !== undefined ||
-      b.source_video_ids !== undefined ||
-      full
-    ) {
-      const mode = b.pick_mode ?? current?.pick_mode ?? 'any';
-      if (!['any', 'topics', 'videos'].includes(mode)) {
-        throw new BadRequestException('Nguồn video không hợp lệ.');
-      }
-      out.pick_mode = mode;
-
-      if (mode === 'topics') {
-        const topics = b.topics ?? current?.topics ?? [];
-        if (!topics.length) throw new BadRequestException('Chọn ít nhất 1 chủ đề.');
-        out.topics = [...new Set(topics)];
-        out.source_video_ids = [];
-      } else if (mode === 'videos') {
-        const ids = b.source_video_ids ?? current?.source_video_ids ?? [];
-        if (!ids.length) throw new BadRequestException('Tick ít nhất 1 video.');
-        const owned = await this.prisma.source_videos.findMany({
-          where: { id: { in: ids }, owner_id: ownerId },
-          select: { id: true },
-        });
-        if (owned.length !== ids.length) {
-          throw new BadRequestException('Có video không tồn tại hoặc không thuộc bạn.');
-        }
-        out.source_video_ids = ids;
-        out.topics = [];
-      } else {
-        // Đổi về "bất kỳ" thì dọn luôn phạm vi cũ, tránh dữ liệu mồ côi gây
-        // hiểu nhầm khi đọc lại quy tắc.
-        out.topics = [];
-        out.source_video_ids = [];
-      }
-    }
+    // Nguồn video (any/topics/videos/channel). Kiểm theo pick_mode SAU KHI gộp
+    // với giá trị đang lưu: sửa quy tắc mà chỉ gửi mỗi `topics` vẫn soi đúng mode.
+    await this.applySourceScope(b, current, ownerId, full, out);
 
     if (b.video_config !== undefined) out.video_config = b.video_config ?? {};
     if (b.is_active !== undefined) out.is_active = !!b.is_active;
 
     return out;
+  }
+
+  /**
+   * Kiểm & chuẩn hoá NGUỒN video (dùng chung cho produce & reup). Bốn cách:
+   *   any     — bất kỳ video chưa sản xuất
+   *   topics  — theo cụm chủ đề (≥1 chủ đề)
+   *   videos  — đúng những video đã tick (≥1, phải thuộc user)
+   *   channel — đúng 1 kênh nguồn đã theo dõi (phải thuộc user)
+   * Đổi mode thì dọn sạch phạm vi của mode khác -> không để dữ liệu mồ côi.
+   */
+  private async applySourceScope(
+    b: RuleBody,
+    current: any,
+    ownerId: string,
+    full: boolean,
+    out: Record<string, any>,
+  ): Promise<void> {
+    if (
+      b.pick_mode === undefined &&
+      b.topics === undefined &&
+      b.source_video_ids === undefined &&
+      b.source_channel_id === undefined &&
+      !full
+    ) {
+      return;
+    }
+    const mode = b.pick_mode ?? current?.pick_mode ?? 'any';
+    if (!['any', 'topics', 'videos', 'channel'].includes(mode)) {
+      throw new BadRequestException('Nguồn video không hợp lệ.');
+    }
+    out.pick_mode = mode;
+
+    if (mode === 'topics') {
+      const topics = b.topics ?? current?.topics ?? [];
+      if (!topics.length) throw new BadRequestException('Chọn ít nhất 1 chủ đề.');
+      out.topics = [...new Set(topics)];
+      out.source_video_ids = [];
+      out.source_channel_id = null;
+    } else if (mode === 'videos') {
+      const ids = b.source_video_ids ?? current?.source_video_ids ?? [];
+      if (!ids.length) throw new BadRequestException('Tick ít nhất 1 video.');
+      const owned = await this.prisma.source_videos.findMany({
+        where: { id: { in: ids }, owner_id: ownerId },
+        select: { id: true },
+      });
+      if (owned.length !== ids.length) {
+        throw new BadRequestException('Có video không tồn tại hoặc không thuộc bạn.');
+      }
+      out.source_video_ids = ids;
+      out.topics = [];
+      out.source_channel_id = null;
+    } else if (mode === 'channel') {
+      const chId = b.source_channel_id ?? current?.source_channel_id ?? null;
+      if (!chId) throw new BadRequestException('Chọn 1 kênh nguồn đã theo dõi.');
+      const ch = await this.prisma.channels.findFirst({
+        where: { id: chId, owner_id: ownerId },
+        select: { id: true },
+      });
+      if (!ch) {
+        throw new BadRequestException('Kênh nguồn không tồn tại hoặc không thuộc bạn.');
+      }
+      out.source_channel_id = chId;
+      out.topics = [];
+      out.source_video_ids = [];
+    } else {
+      // any: dọn sạch mọi phạm vi cũ.
+      out.topics = [];
+      out.source_video_ids = [];
+      out.source_channel_id = null;
+    }
   }
 }

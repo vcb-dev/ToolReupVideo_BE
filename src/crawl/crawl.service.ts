@@ -44,6 +44,8 @@ export class CrawlService {
       cover_url: v.cover_url,
       original_url: v.original_url,
       drive_id: v.drive_id,
+      // Ngày đăng gốc (ISO từ AI). Null nếu nguồn không có -> reup không xét.
+      published_at: v.published_at ?? null,
       owner_id: channel.owner_id,
       channel_id: channel.id,
       status: 'new',

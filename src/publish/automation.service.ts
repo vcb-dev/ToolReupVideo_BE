@@ -41,6 +41,7 @@ export class AutomationService {
       for (const rule of rules) {
         try {
           if (rule.kind === 'post') await this.runPostRule(rule);
+          else if (rule.kind === 'reup') await this.runReupRule(rule);
           else await this.runProduceRule(rule);
         } catch (e: any) {
           this.logger.error(`Quy tắc "${rule.name}" lỗi: ${e.message}`);
@@ -83,8 +84,12 @@ export class AutomationService {
     return best;
   }
 
-  /** Điều kiện lọc source_videos theo phạm vi user chọn (chủ đề / tick tay). */
+  /** Điều kiện lọc source_videos theo phạm vi user chọn (kênh / chủ đề / tick tay). */
   private sourceScope(rule: any): Record<string, any> {
+    if (rule.pick_mode === 'channel') {
+      // Kênh không còn (bị xoá -> null) thì không khớp video nào -> quy tắc im.
+      return rule.source_channel_id ? { channel_id: rule.source_channel_id } : { id: null };
+    }
     if (rule.pick_mode === 'topics') {
       // '' = nhóm "chưa phân loại"; trong DB topic có thể là '' HOẶC null.
       const topics: string[] = rule.topics || [];
@@ -137,8 +142,9 @@ export class AutomationService {
     await this.finish(rule, slot, made < want ? this.emptyMsg(rule) : null);
   }
 
-  /** Sản xuất 1 video nguồn -> ghi processed_videos (vào kho thành phẩm). */
-  private async produceOne(rule: any, sv: any): Promise<void> {
+  /** Sản xuất 1 video nguồn -> ghi processed_videos. Trả về bản ghi thành phẩm
+   *  (reup cần để đặt lịch đăng ngay; produce bỏ qua giá trị trả về). */
+  private async produceOne(rule: any, sv: any): Promise<any> {
     this.logger.log(`Quy tắc "${rule.name}": đang sản xuất ${sv.platform_video_id}...`);
     // Tự động không có người vẽ khung che -> mặc định để Gemini TỰ DÒ khung chữ
     // gốc + ghi phụ đề Việt. Đặt trước rule.video_config nên nếu sau này UI quy
@@ -161,7 +167,7 @@ export class AutomationService {
     );
     if (!res.data?.ok) throw new Error(res.data?.error || 'AI produce thất bại');
 
-    await this.prisma.processed_videos.create({
+    return this.prisma.processed_videos.create({
       data: {
         owner_id: rule.owner_id,
         source_video_id: sv.id,
@@ -194,6 +200,9 @@ export class AutomationService {
 
   /** Nguồn cạn thì nói rõ cạn ở đâu, không để user đoán. */
   private emptyMsg(rule: any): string {
+    if (rule.pick_mode === 'channel') {
+      return 'Hết video chưa sản xuất của kênh nguồn đã chọn (kênh cần bật Theo dõi để tự cào).';
+    }
     if (rule.pick_mode === 'topics') {
       return `Hết video chưa sản xuất trong chủ đề đã chọn (${(rule.topics || []).join(', ')}).`;
     }
@@ -230,28 +239,7 @@ export class AutomationService {
         ranOut = true;
         break; // hết thành phẩm, các page sau cũng vậy
       }
-      const sv = await this.prisma.source_videos.findUnique({
-        where: { id: pv.source_video_id },
-        select: { descr: true },
-      });
-      // Sinh hashtag per-video bằng Gemini nếu quy tắc bật ai_hashtags.
-      const aiHashtags = rule.ai_hashtags
-        ? await this.fetchAiHashtags(sv?.descr ?? null)
-        : '';
-      await this.prisma.schedules.create({
-        data: {
-          owner_id: rule.owner_id,
-          processed_video_id: pv.id,
-          page_id: page.id,
-          caption: this.caption(rule, sv?.descr ?? null, aiHashtags),
-          publish_at: slot,
-          status: 'pending',
-          rule_id: rule.id,
-          // Link affiliate KHÔNG vào caption — ScheduleService đăng thành bình
-          // luận dưới bài sau khi đăng xong.
-          affiliate_id: rule.affiliate_id || null,
-        },
-      });
+      await this.queuePost(rule, pv, page, slot);
       queued++;
     }
     if (queued) {
@@ -262,6 +250,109 @@ export class AutomationService {
       slot,
       ranOut ? 'Hết video thành phẩm chưa đăng — cần quy tắc sản xuất bù.' : null,
     );
+  }
+
+  /** Tạo 1 dòng schedules (pending) cho 1 thành phẩm + 1 page ở khung giờ slot.
+   *  Dùng chung cho quy tắc post lẫn reup. Link affiliate KHÔNG vào caption —
+   *  ScheduleService đăng thành bình luận dưới bài sau khi đăng xong. */
+  private async queuePost(rule: any, pv: any, page: any, slot: Date): Promise<void> {
+    const sv = await this.prisma.source_videos.findUnique({
+      where: { id: pv.source_video_id },
+      select: { descr: true },
+    });
+    // Sinh hashtag per-video bằng Gemini nếu quy tắc bật ai_hashtags.
+    const aiHashtags = rule.ai_hashtags
+      ? await this.fetchAiHashtags(sv?.descr ?? null)
+      : '';
+    await this.prisma.schedules.create({
+      data: {
+        owner_id: rule.owner_id,
+        processed_video_id: pv.id,
+        page_id: page.id,
+        caption: this.caption(rule, sv?.descr ?? null, aiHashtags),
+        publish_at: slot,
+        status: 'pending',
+        rule_id: rule.id,
+        affiliate_id: rule.affiliate_id || null,
+      },
+    });
+  }
+
+  // ---------------- REUP TRỌN GÓI (sản xuất + đăng ngay) ----------------
+
+  /**
+   * Reup: tới khung giờ, lấy VIDEO MỚI NHẤT do kênh nguồn đăng trong
+   * `recency_days` ngày gần nhất, chưa sản xuất -> dựng ngay -> đặt lịch đăng lên
+   * mọi page đích ở chính khung giờ đó (đăng luôn, không tích kho). Khung sau tự
+   * lấy video mới kế tiếp -> cuốn dần theo thứ tự mới nhất, không đăng trùng.
+   */
+  private async runReupRule(rule: any): Promise<void> {
+    const now = new Date();
+    const slot = this.dueSlot(rule, now);
+    if (!slot) return;
+
+    const pages = await this.prisma.pages.findMany({
+      where: { id: { in: rule.page_ids }, owner_id: rule.owner_id, is_active: true },
+    });
+    if (!pages.length) {
+      throw new Error('Quy tắc không còn page đích nào đang hoạt động.');
+    }
+
+    const sv = await this.pickRecentSourceVideo(rule, now);
+    if (!sv) {
+      await this.finish(rule, slot, this.reupEmptyMsg(rule));
+      return;
+    }
+    const pv = await this.produceOne(rule, sv);
+
+    let queued = 0;
+    for (const page of pages) {
+      // Chống trùng khi cron chạy lại cùng khung (hàng rào cứng là unique index).
+      const exists = await this.prisma.schedules.findFirst({
+        where: { rule_id: rule.id, page_id: page.id, publish_at: slot },
+      });
+      if (exists) continue;
+      await this.queuePost(rule, pv, page, slot);
+      queued++;
+    }
+    this.logger.log(
+      `Quy tắc "${rule.name}" (reup): đăng "${sv.platform_video_id}" lên ${queued} page lúc ${slot.toISOString()}.`,
+    );
+    await this.finish(rule, slot, null);
+  }
+
+  /**
+   * Video nguồn cho reup: MỚI NHẤT (published_at desc) do kênh đăng trong
+   * `recency_days` ngày gần nhất, có file, chưa sản xuất, đúng phạm vi nguồn.
+   * `gte cutoff` tự loại video thiếu published_at (cào trước khi có tính năng).
+   */
+  private async pickRecentSourceVideo(rule: any, now: Date) {
+    const days = rule.recency_days ?? 1;
+    const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+    return this.prisma.source_videos.findFirst({
+      where: {
+        owner_id: rule.owner_id,
+        drive_id: { not: null },
+        processed: { none: {} },
+        published_at: { gte: cutoff },
+        ...this.sourceScope(rule),
+      },
+      orderBy: { published_at: 'desc' },
+    });
+  }
+
+  /** Không còn video mới trong cửa sổ -> nói rõ để user biết vì sao im. */
+  private reupEmptyMsg(rule: any): string {
+    const days = rule.recency_days ?? 1;
+    const scope =
+      rule.pick_mode === 'channel'
+        ? ' của kênh nguồn đã chọn (kênh cần bật Theo dõi để tự cào hằng ngày)'
+        : rule.pick_mode === 'topics'
+        ? ` trong chủ đề đã chọn (${(rule.topics || []).join(', ')})`
+        : rule.pick_mode === 'videos'
+        ? ' trong các video đã tick'
+        : '';
+    return `Không còn video mới (đăng trong ${days} ngày) chưa reup${scope}.`;
   }
 
   /**
