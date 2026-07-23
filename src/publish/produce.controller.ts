@@ -14,6 +14,7 @@ import axios from 'axios';
 import { SupabaseAuthGuard } from '../auth/auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
+import { MediaResolveService } from './media-resolve.service';
 
 const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
 
@@ -27,6 +28,7 @@ export class ProduceController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
+    private readonly media: MediaResolveService,
   ) {}
 
   /**
@@ -37,25 +39,8 @@ export class ProduceController {
     config: Record<string, any>,
     ownerId: string,
   ): Promise<Record<string, any>> {
-    const c = { ...(config || {}) };
-    if (c.frame_asset_id) {
-      const fa = await this.prisma.media_assets.findFirst({
-        where: { id: c.frame_asset_id, owner_id: ownerId, kind: 'frame' },
-      });
-      if (fa?.drive_id) {
-        c.frame_url = await this.storage.signDownload(fa.drive_id, 3600);
-        c.frame_chroma = fa.chroma_color || '0x00FF00';
-        delete c.frame; // ưu tiên khung upload hơn viền màu built-in
-      }
-      delete c.frame_asset_id;
-    }
-    if (c.music_asset_id) {
-      const ma = await this.prisma.media_assets.findFirst({
-        where: { id: c.music_asset_id, owner_id: ownerId, kind: 'music' },
-      });
-      if (ma?.drive_id) c.music_url = await this.storage.signDownload(ma.drive_id, 3600);
-      delete c.music_asset_id;
-    }
+    // Khung viền + nhạc từ Kho -> URL ký sẵn (logic chung với cron tự động).
+    const c = await this.media.resolveFrameMusic(ownerId, config || {});
     if (Array.isArray(c.post_page_ids) && c.post_page_ids.length) {
       const pages = await this.prisma.pages.findMany({
         where: { id: { in: c.post_page_ids }, owner_id: ownerId },
@@ -94,49 +79,12 @@ export class ProduceController {
       delete c.affiliate_id;
     }
     if (c.voice_asset_id) {
-      const va = await this.prisma.media_assets.findFirst({
-        where: { id: c.voice_asset_id, owner_id: ownerId, kind: 'voice' },
-      });
-      if (va) {
-        // Có voice_id cache -> dùng lại; chưa có -> clone từ mẫu (1 lần) rồi cache.
-        let vid = va.voice_id;
-        if (!vid && va.drive_id) {
-          vid = await this.cloneVoiceFromAsset(va);
-          if (vid) {
-            await this.prisma.media_assets.update({
-              where: { id: va.id },
-              data: { voice_id: vid },
-            });
-          }
-        }
-        if (vid) c.voice_id = vid;
-      }
+      // Clone 1 lần + cache voice_id — logic chung nằm ở MediaResolveService.
+      const vid = await this.media.resolveVoiceId(ownerId, c.voice_asset_id);
+      if (vid) c.voice_id = vid;
       delete c.voice_asset_id;
     }
     return c;
-  }
-
-  /**
-   * Clone giọng từ mẫu đã lưu (R2) qua AI /api/voice/clone. Trả voice_id hoặc
-   * null nếu lỗi. Tên voice ổn định theo asset để idempotent.
-   */
-  private async cloneVoiceFromAsset(asset: any): Promise<string | null> {
-    try {
-      const url = await this.storage.signDownload(asset.drive_id, 600);
-      const dl = await axios.get(url, { responseType: 'arraybuffer' });
-      const buf = Buffer.from(dl.data);
-      const voiceName = `voice_${String(asset.id).replace(/-/g, '').slice(0, 20)}`;
-      const form = new FormData();
-      form.append('file', new Blob([new Uint8Array(buf)]), 'sample.mp3');
-      form.append('voice_id', voiceName);
-      const res = await axios.post(`${AI_URL}/api/voice/clone`, form, {
-        timeout: 1000 * 300,
-      });
-      if (res.data?.ok && res.data?.voice_id) return res.data.voice_id;
-      return null;
-    } catch {
-      return null;
-    }
   }
 
   /**

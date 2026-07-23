@@ -74,10 +74,12 @@ export class CrawlService {
     max = DEFAULT_MAX,
   ): Promise<{ inserted: number }> {
     const { rows, meta } = await this.crawlFromAi(channel, max);
-    const res = await this.prisma.source_videos.createMany({
-      data: rows,
-      skipDuplicates: true,
-    });
+    const res = rows.length
+      ? await this.prisma.source_videos.createMany({
+          data: rows,
+          skipDuplicates: true,
+        })
+      : { count: 0 };
     await this.prisma.channels.update({
       where: { id: channel.id },
       data: { last_crawled_at: new Date(), ...this.channelMetaUpdate(meta) },

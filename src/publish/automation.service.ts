@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
+import { MediaResolveService } from './media-resolve.service';
 import { vnParts, vnTimeToUtc } from './vn-time';
 
 const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
@@ -28,7 +29,10 @@ export class AutomationService {
   /** Khoá mềm: sản xuất lâu, không để lần cron sau chồng lên lần đang chạy. */
   private running = false;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly media: MediaResolveService,
+  ) {}
 
   @Cron(CronExpression.EVERY_MINUTE, { name: 'automation-tick' })
   async tick(): Promise<void> {
@@ -155,12 +159,31 @@ export class AutomationService {
     // Tự động không có người vẽ khung che -> mặc định để Gemini TỰ DÒ khung chữ
     // gốc + ghi phụ đề Việt. Đặt trước rule.video_config nên nếu sau này UI quy
     // tắc cho chỉnh các cờ này thì giá trị của rule vẫn thắng.
-    const config = {
-      cover_text: true,
-      cover_detect: true,
-      subtitle_enabled: true,
-      ...(rule.video_config || {}),
-    };
+    // Khung viền + nhạc từ Kho -> URL ký sẵn (logic chung với Xưởng video).
+    const config: Record<string, any> = await this.media.resolveFrameMusic(
+      rule.owner_id,
+      {
+        cover_text: true,
+        cover_detect: true,
+        subtitle_enabled: true,
+        ...(rule.video_config || {}),
+      },
+    );
+    // Giọng lồng = giọng upload trong Kho (không còn giọng hệ thống mặc định).
+    // Đổi voice_asset_id -> voice_id (clone 1 lần rồi cache) như Xưởng video.
+    if (config.voice_asset_id) {
+      const vid = await this.media.resolveVoiceId(
+        rule.owner_id,
+        config.voice_asset_id,
+      );
+      if (vid) config.voice_id = vid;
+      delete config.voice_asset_id;
+    }
+    if (!config.voice_id) {
+      throw new Error(
+        'Quy tắc chưa có giọng lồng — sửa quy tắc và chọn giọng trong Kho.',
+      );
+    }
     const res = await axios.post(
       `${AI_URL}/api/produce`,
       {
