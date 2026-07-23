@@ -300,6 +300,24 @@ model automation_rules {
   @@map("automation_rules")
 }
 
+/// Nhật ký từng LƯỢT chạy của quy tắc tự động (tab "Tự động" hiện danh sách).
+/// rule_name là snapshot — quy tắc bị xoá thì rule_id về null nhưng log còn đọc được.
+model automation_run_logs {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id   String    @db.Uuid
+  rule_id    String?   @db.Uuid
+  rule_name  String
+  kind       String
+  slot_at    DateTime? @db.Timestamptz(6)
+  /// ok | warn (bỏ lượt/cạn nguồn) | error
+  status     String
+  message    String?
+  created_at DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([owner_id, created_at(sort: Desc)])
+  @@map("automation_run_logs")
+}
+
 model affiliate_links {
   id         String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   owner_id   String             @db.Uuid

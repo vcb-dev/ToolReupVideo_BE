@@ -51,6 +51,7 @@ export class AutomationService {
               data: { last_error: e.message, last_run_at: new Date() },
             })
             .catch(() => undefined);
+          await this.logRun(rule, null, 'error', e.message);
         }
       }
     } catch (e: any) {
@@ -139,7 +140,12 @@ export class AutomationService {
       made++;
     }
     this.logger.log(`Quy tắc "${rule.name}": sản xuất ${made}/${want} video.`);
-    await this.finish(rule, slot, made < want ? this.emptyMsg(rule) : null);
+    await this.finish(
+      rule,
+      slot,
+      made < want ? this.emptyMsg(rule) : null,
+      made > 0 ? `Sản xuất ${made}/${want} video.` : null,
+    );
   }
 
   /** Sản xuất 1 video nguồn -> ghi processed_videos. Trả về bản ghi thành phẩm
@@ -249,6 +255,7 @@ export class AutomationService {
       rule,
       slot,
       ranOut ? 'Hết video thành phẩm chưa đăng — cần quy tắc sản xuất bù.' : null,
+      queued > 0 ? `Đặt ${queued} lịch đăng.` : null,
     );
   }
 
@@ -318,7 +325,12 @@ export class AutomationService {
     this.logger.log(
       `Quy tắc "${rule.name}" (reup): đăng "${sv.platform_video_id}" lên ${queued} page lúc ${slot.toISOString()}.`,
     );
-    await this.finish(rule, slot, null);
+    await this.finish(
+      rule,
+      slot,
+      null,
+      `Reup video "${sv.platform_video_id}" lên ${queued} page.`,
+    );
   }
 
   /**
@@ -416,11 +428,44 @@ export class AutomationService {
     }
   }
 
-  /** Ghi nhận đã xử lý xong khung giờ này (chống cron chạy lại cùng khung). */
-  private async finish(rule: any, slot: Date, note: string | null): Promise<void> {
+  /**
+   * Ghi nhận đã xử lý xong khung giờ này (chống cron chạy lại cùng khung) +
+   * ghi 1 dòng nhật ký. `summary` = việc đã làm ("Sản xuất 2/3 video."),
+   * `note` = lý do bỏ lượt/cạn nguồn -> status 'warn'.
+   */
+  private async finish(
+    rule: any,
+    slot: Date,
+    note: string | null,
+    summary: string | null = null,
+  ): Promise<void> {
     await this.prisma.automation_rules.update({
       where: { id: rule.id },
       data: { last_slot_at: slot, last_run_at: new Date(), last_error: note },
     });
+    const message = [summary, note].filter(Boolean).join(' — ') || 'Chạy xong.';
+    await this.logRun(rule, slot, note ? 'warn' : 'ok', message);
+  }
+
+  /** Ghi 1 dòng nhật ký lượt chạy — best-effort, lỗi log KHÔNG được cản quy tắc. */
+  private async logRun(
+    rule: any,
+    slot: Date | null,
+    status: 'ok' | 'warn' | 'error',
+    message: string,
+  ): Promise<void> {
+    await this.prisma.automation_run_logs
+      .create({
+        data: {
+          owner_id: rule.owner_id,
+          rule_id: rule.id,
+          rule_name: rule.name,
+          kind: rule.kind || 'produce',
+          slot_at: slot,
+          status,
+          message,
+        },
+      })
+      .catch(() => undefined);
   }
 }

@@ -10,6 +10,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -84,6 +85,28 @@ export class AutomationController {
       .map(([topic, available]) => ({ topic, available }))
       .sort((a, b) => a.topic.localeCompare(b.topic));
     return { ok: true, topics };
+  }
+
+  /**
+   * Nhật ký hoạt động: mỗi lượt cron xử lý khung giờ của một quy tắc ghi 1 dòng
+   * (đã sản xuất/đăng gì, bỏ lượt vì sao, hay lỗi). Lọc được theo quy tắc.
+   */
+  @Get('logs')
+  async logs(
+    @Req() req: any,
+    @Query('rule_id') ruleId?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const take = Math.min(Math.max(Number(limit) || 50, 1), 200);
+    const logs = await this.prisma.automation_run_logs.findMany({
+      where: {
+        owner_id: req.user.id,
+        ...(ruleId ? { rule_id: ruleId } : {}),
+      },
+      orderBy: { created_at: 'desc' },
+      take,
+    });
+    return { ok: true, logs };
   }
 
   @Post('rules')
