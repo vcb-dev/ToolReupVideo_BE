@@ -91,6 +91,28 @@ export class AutomationService {
     return best;
   }
 
+  /** Mốc UTC của [00:00 hôm nay VN, 00:00 ngày mai VN) — cửa sổ "hôm nay" giờ VN. */
+  private vnDayRange(now: Date): { start: Date; end: Date } {
+    return {
+      start: vnTimeToUtc(now, '00:00', 0)!,
+      end: vnTimeToUtc(now, '00:00', 1)!,
+    };
+  }
+
+  /**
+   * Số video PHÂN BIỆT đã đặt lịch/đăng HÔM NAY (giờ VN) cho quy tắc này. Dùng
+   * làm hạn mức "đăng N video/ngày": reup 1 video -> nhiều page vẫn tính 1.
+   */
+  private async postedTodayDistinct(rule: any, now: Date): Promise<number> {
+    const { start, end } = this.vnDayRange(now);
+    const rows = await this.prisma.schedules.findMany({
+      where: { rule_id: rule.id, publish_at: { gte: start, lt: end } },
+      select: { processed_video_id: true },
+      distinct: ['processed_video_id'],
+    });
+    return rows.length;
+  }
+
   /** Điều kiện lọc source_videos theo phạm vi user chọn (kênh / chủ đề / tick tay). */
   private sourceScope(rule: any): Record<string, any> {
     if (rule.pick_mode === 'channel') {
@@ -257,13 +279,35 @@ export class AutomationService {
       throw new Error('Quy tắc không còn page đích nào đang hoạt động.');
     }
 
+    // Hạn mức "đăng N video/ngày": chỉ rải thêm tối đa `room` video phân biệt.
+    let room = Infinity;
+    const limit = rule.daily_limit;
+    if (limit && limit > 0) {
+      const used = await this.postedTodayDistinct(rule, now);
+      room = limit - used;
+      if (room <= 0) {
+        await this.finish(
+          rule,
+          slot,
+          null,
+          `Đã đủ hạn mức ${used}/${limit} video hôm nay — bỏ lượt.`,
+        );
+        return;
+      }
+    }
+
     let queued = 0;
     let ranOut = false;
+    let hitLimit = false;
     for (const page of pages) {
       const exists = await this.prisma.schedules.findFirst({
         where: { rule_id: rule.id, page_id: page.id, publish_at: slot },
       });
       if (exists) continue;
+      if (queued >= room) {
+        hitLimit = true;
+        break; // đủ hạn mức ngày -> dừng rải thêm page
+      }
 
       const pv = await this.pickReadyVideo(rule);
       if (!pv) {
@@ -280,7 +324,9 @@ export class AutomationService {
       rule,
       slot,
       ranOut ? 'Hết video thành phẩm chưa đăng — cần quy tắc sản xuất bù.' : null,
-      queued > 0 ? `Đặt ${queued} lịch đăng.` : null,
+      queued > 0
+        ? `Đặt ${queued} lịch đăng.${hitLimit ? ' (đã đủ hạn mức ngày)' : ''}`
+        : null,
     );
   }
 
@@ -328,6 +374,22 @@ export class AutomationService {
     });
     if (!pages.length) {
       throw new Error('Quy tắc không còn page đích nào đang hoạt động.');
+    }
+
+    // Hạn mức "đăng N video/ngày" — chặn TRƯỚC khi produceOne (gọi AI tốn kém).
+    // Reup = 1 video/khung nên chỉ cần: đủ hạn mức thì bỏ lượt.
+    const limit = rule.daily_limit;
+    if (limit && limit > 0) {
+      const used = await this.postedTodayDistinct(rule, now);
+      if (used >= limit) {
+        await this.finish(
+          rule,
+          slot,
+          null,
+          `Đã đủ hạn mức ${used}/${limit} video hôm nay — bỏ lượt.`,
+        );
+        return;
+      }
     }
 
     const sv = await this.pickRecentSourceVideo(rule, now);

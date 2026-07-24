@@ -25,6 +25,7 @@ type RuleBody = {
   batch_size?: number;
   stock_target?: number;
   recency_days?: number; // reup: chỉ lấy video đăng trong N ngày gần nhất
+  daily_limit?: number | null; // post/reup: hạn mức video đăng mỗi ngày (null/0 = vô hạn)
   weekdays?: number[];
   times?: string[];
   page_ids?: string[];
@@ -151,6 +152,21 @@ export class AutomationController {
   }
 
   /**
+   * Chuẩn hoá "số video đăng mỗi ngày" (post/reup). Rỗng/0 = null = không giới
+   * hạn; ngược lại phải là số nguyên 1..100.
+   */
+  private normDailyLimit(raw: any): number | null {
+    if (raw === undefined || raw === null || raw === 0 || raw === '') return null;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 1 || n > 100) {
+      throw new BadRequestException(
+        'Số video mỗi ngày phải từ 1 đến 100 (để trống = không giới hạn).',
+      );
+    }
+    return n;
+  }
+
+  /**
    * Kiểm tra dữ liệu quy tắc. `full` = tạo mới (bắt buộc đủ tên/thứ/giờ/page);
    * sửa thì chỉ kiểm các trường được gửi lên, `current` là bản đang lưu để gộp.
    */
@@ -216,6 +232,9 @@ export class AutomationController {
         out.pick_mode = 'any';
         out.source_video_ids = [];
       }
+      if (b.daily_limit !== undefined || full) {
+        out.daily_limit = this.normDailyLimit(b.daily_limit);
+      }
       if (b.hashtags !== undefined) out.hashtags = (b.hashtags || '').trim() || null;
       if (b.ai_hashtags !== undefined) out.ai_hashtags = !!b.ai_hashtags;
       if (b.affiliate_id !== undefined) out.affiliate_id = b.affiliate_id || null;
@@ -257,6 +276,10 @@ export class AutomationController {
           throw new BadRequestException('Số video mỗi lượt phải từ 1 đến 20.');
         }
         out.batch_size = n;
+      }
+      // -- Số video đăng mỗi ngày (tuỳ chọn, null/0 = vô hạn) --
+      if (b.daily_limit !== undefined || full) {
+        out.daily_limit = this.normDailyLimit(b.daily_limit);
       }
       // -- Cấu hình sản xuất + meta đăng --
       if (b.video_config !== undefined) out.video_config = b.video_config ?? {};
