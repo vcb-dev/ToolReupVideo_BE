@@ -98,9 +98,10 @@ export class CrawlService {
     }
     let channels: Channel[] = [];
     try {
-      channels = (await this.prisma.channels.findMany({
-        where: { is_monitored: true },
-      })) as unknown as Channel[];
+      channels = (await this.prisma.withRetry(
+        () => this.prisma.channels.findMany({ where: { is_monitored: true } }),
+        'đọc danh sách kênh theo dõi',
+      )) as unknown as Channel[];
     } catch (e: any) {
       this.logger.error(`Không đọc được danh sách kênh: ${e.message}`);
       return;

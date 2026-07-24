@@ -25,9 +25,13 @@ export class ScheduleService {
 
     let due: any[] = [];
     try {
-      due = await this.prisma.schedules.findMany({
-        where: { status: 'pending', publish_at: { lte: new Date() } },
-      });
+      due = await this.prisma.withRetry(
+        () =>
+          this.prisma.schedules.findMany({
+            where: { status: 'pending', publish_at: { lte: new Date() } },
+          }),
+        'đọc lịch đến hạn',
+      );
     } catch (e: any) {
       this.logger.error(`Không đọc được lịch đến hạn: ${e.message}`);
       return;

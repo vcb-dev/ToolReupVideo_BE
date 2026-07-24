@@ -39,9 +39,11 @@ export class AutomationService {
     if (!this.prisma.enabled || this.running) return;
     this.running = true;
     try {
-      const rules = await this.prisma.automation_rules.findMany({
-        where: { is_active: true },
-      });
+      const rules = await this.prisma.withRetry(
+        () =>
+          this.prisma.automation_rules.findMany({ where: { is_active: true } }),
+        'đọc quy tắc tự động',
+      );
       for (const rule of rules) {
         try {
           if (rule.kind === 'post') await this.runPostRule(rule);

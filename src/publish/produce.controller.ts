@@ -19,6 +19,33 @@ import { MediaResolveService } from './media-resolve.service';
 const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
 
 /**
+ * Các khoá được phép ghi đè RIÊNG cho từng video (thanh "Đang chỉnh" ở Xưởng).
+ * Cố ý hẹp: config per-item KHÔNG đi qua resolveMediaConfig nên không nhận
+ * asset id / page đích; không lọc thì FE gửi được cả post_targets, music_url…
+ * vào từng video, vượt mặt phần resolve + kiểm quyền sở hữu.
+ */
+const OVERRIDE_KEYS = [
+  'subtitle_enabled',
+  'subtitle_lang',
+  'orientation',
+  'speed',
+  'cover_boxes',
+  'cover_feather',
+] as const;
+
+/** Lọc trắng ghi đè của 1 video. Trả undefined khi không còn khoá hợp lệ. */
+export function pickOverride(
+  o: Record<string, any> | undefined,
+): Record<string, any> | undefined {
+  if (!o || typeof o !== 'object') return undefined;
+  const out: Record<string, any> = {};
+  for (const k of OVERRIDE_KEYS) {
+    if (o[k] !== undefined) out[k] = o[k];
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
  * Sản xuất 1 source video -> ghi processed_videos.
  * Gọi AI /api/produce (dịch + lồng tiếng + ghép), có thể chạy lâu.
  */
@@ -198,6 +225,8 @@ export class ProduceController {
       auto_grammar?: boolean;
       remove_sensitive?: boolean;
       config?: Record<string, any>;
+      /** Ghi đè riêng từng video, key = source_video_id (xem OVERRIDE_KEYS). */
+      overrides?: Record<string, Record<string, any>>;
     },
     @Req() req: any,
   ) {
@@ -212,12 +241,18 @@ export class ProduceController {
     if (svs.length === 0) {
       throw new NotFoundException('Không tìm thấy source video hợp lệ');
     }
-    const items = svs.map((sv) => ({
-      source_id: sv.id,
-      video_id: sv.platform_video_id,
-      drive_id: sv.drive_id,
-      desc: sv.descr,
-    }));
+    const overrides = body.overrides || {};
+    const items = svs.map((sv) => {
+      const ov = pickOverride(overrides[sv.id]);
+      return {
+        source_id: sv.id,
+        video_id: sv.platform_video_id,
+        drive_id: sv.drive_id,
+        desc: sv.descr,
+        // AI áp chồng lên config chung cho RIÊNG video này (bỏ hẳn khi rỗng).
+        ...(ov ? { config: ov } : {}),
+      };
+    });
     const config = await this.resolveMediaConfig(body.config ?? {}, req.user.id);
     try {
       const res = await axios.post(
