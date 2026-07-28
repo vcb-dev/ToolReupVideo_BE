@@ -44,6 +44,8 @@ export class CrawlService {
       cover_url: v.cover_url,
       original_url: v.original_url,
       drive_id: v.drive_id,
+      // Ngày đăng gốc (ISO từ AI). Null nếu nguồn không có -> reup không xét.
+      published_at: v.published_at ?? null,
       owner_id: channel.owner_id,
       channel_id: channel.id,
       status: 'new',
@@ -72,10 +74,12 @@ export class CrawlService {
     max = DEFAULT_MAX,
   ): Promise<{ inserted: number }> {
     const { rows, meta } = await this.crawlFromAi(channel, max);
-    const res = await this.prisma.source_videos.createMany({
-      data: rows,
-      skipDuplicates: true,
-    });
+    const res = rows.length
+      ? await this.prisma.source_videos.createMany({
+          data: rows,
+          skipDuplicates: true,
+        })
+      : { count: 0 };
     await this.prisma.channels.update({
       where: { id: channel.id },
       data: { last_crawled_at: new Date(), ...this.channelMetaUpdate(meta) },
@@ -94,9 +98,10 @@ export class CrawlService {
     }
     let channels: Channel[] = [];
     try {
-      channels = (await this.prisma.channels.findMany({
-        where: { is_monitored: true },
-      })) as unknown as Channel[];
+      channels = (await this.prisma.withRetry(
+        () => this.prisma.channels.findMany({ where: { is_monitored: true } }),
+        'đọc danh sách kênh theo dõi',
+      )) as unknown as Channel[];
     } catch (e: any) {
       this.logger.error(`Không đọc được danh sách kênh: ${e.message}`);
       return;

@@ -52,8 +52,8 @@ export class MediaController {
     const kind = (req.body?.kind || '').trim();
     const name = (req.body?.name || file?.originalname || 'Không tên').trim();
     if (!file) throw new BadRequestException('Thiếu file.');
-    if (!['music', 'frame', 'voice'].includes(kind)) {
-      throw new BadRequestException('kind phải là music | frame | voice.');
+    if (!['music', 'frame', 'voice', 'logo'].includes(kind)) {
+      throw new BadRequestException('kind phải là music | frame | voice | logo.');
     }
 
     // Mọi loại (kể cả voice) -> chỉ LƯU file lên R2. Voice sẽ được clone ở lần
