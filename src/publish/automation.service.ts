@@ -229,6 +229,7 @@ export class AutomationService {
         target_lang: res.data.target_lang,
         voice_id: res.data.voice_id,
         has_subtitle: res.data.has_subtitle,
+        ai_caption: res.data.ai_caption ?? null,
         status: 'done',
         produced_at: new Date(),
       },
@@ -338,16 +339,21 @@ export class AutomationService {
       where: { id: pv.source_video_id },
       select: { descr: true },
     });
+    // Ưu tiên AI caption tóm tắt từ transcript nếu quy tắc bật ai_caption và pv có ai_caption
+    let baseDescr = sv?.descr ?? null;
+    if (rule.ai_caption) {
+      baseDescr = pv.ai_caption?.trim() || baseDescr;
+    }
     // Sinh hashtag per-video bằng Gemini nếu quy tắc bật ai_hashtags.
     const aiHashtags = rule.ai_hashtags
-      ? await this.fetchAiHashtags(sv?.descr ?? null)
+      ? await this.fetchAiHashtags(baseDescr)
       : '';
     await this.prisma.schedules.create({
       data: {
         owner_id: rule.owner_id,
         processed_video_id: pv.id,
         page_id: page.id,
-        caption: this.caption(rule, sv?.descr ?? null, aiHashtags),
+        caption: this.caption(rule, baseDescr, aiHashtags),
         publish_at: slot,
         status: 'pending',
         rule_id: rule.id,
