@@ -137,6 +137,7 @@ export class AiResultsService {
           target_lang: it.target_lang ?? 'vi',
           voice_id: it.voice_id ?? null,
           has_subtitle: !!it.has_subtitle,
+          ai_caption: it.ai_caption ?? null,
           status: 'done',
           produced_at: new Date(),
         },

@@ -36,6 +36,7 @@ type RuleBody = {
   video_config?: Record<string, any>;
   hashtags?: string;
   ai_hashtags?: boolean;
+  ai_caption?: boolean;
   affiliate_id?: string | null;
   lead_minutes?: number;
   is_active?: boolean;
@@ -237,6 +238,7 @@ export class AutomationController {
       }
       if (b.hashtags !== undefined) out.hashtags = (b.hashtags || '').trim() || null;
       if (b.ai_hashtags !== undefined) out.ai_hashtags = !!b.ai_hashtags;
+      if (b.ai_caption !== undefined) out.ai_caption = !!b.ai_caption;
       if (b.affiliate_id !== undefined) out.affiliate_id = b.affiliate_id || null;
       if (b.is_active !== undefined) out.is_active = !!b.is_active;
       return out;
@@ -285,6 +287,7 @@ export class AutomationController {
       if (b.video_config !== undefined) out.video_config = b.video_config ?? {};
       if (b.hashtags !== undefined) out.hashtags = (b.hashtags || '').trim() || null;
       if (b.ai_hashtags !== undefined) out.ai_hashtags = !!b.ai_hashtags;
+      if (b.ai_caption !== undefined) out.ai_caption = !!b.ai_caption;
       if (b.affiliate_id !== undefined) out.affiliate_id = b.affiliate_id || null;
       if (b.is_active !== undefined) out.is_active = !!b.is_active;
       return out;

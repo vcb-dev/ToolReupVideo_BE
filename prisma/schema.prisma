@@ -202,6 +202,7 @@ model processed_videos {
   target_lang     String       @default("vi")
   voice_id        String?
   has_subtitle    Boolean      @default(false)
+  ai_caption      String?
   category        String?
   status          video_status @default(new)
   produced_at     DateTime?    @db.Timestamptz(6)
@@ -289,6 +290,8 @@ model automation_rules {
   hashtags     String?
   /// post/reup: true = Gemini tự sinh hashtag per-video thay cho `hashtags`.
   ai_hashtags  Boolean  @default(false)
+  /// post/reup: true = Gemini tự sinh caption tóm tắt từ transcript thay cho descr gốc.
+  ai_caption   Boolean  @default(false)
   affiliate_id String?  @db.Uuid
   lead_minutes Int      @default(60)
   is_active    Boolean  @default(true)
