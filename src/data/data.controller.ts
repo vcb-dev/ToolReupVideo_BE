@@ -165,6 +165,14 @@ export class DataController {
         failed.push(key); // file có thể đã xoá tay từ trước
       }
     }
+
+    // Video người dùng tự tải lên còn kèm một ảnh bìa nằm cạnh file (suy ra từ
+    // drive_id, không có cột riêng). Bỏ qua thì thumbnail đọng lại vĩnh viễn.
+    if (model === 'source_videos' && row?.platform === 'upload' && row?.drive_id) {
+      await this.storage
+        .remove(StorageService.coverKeyFor(row.drive_id))
+        .catch(() => undefined);
+    }
     return { ok: true, storage_failed: failed.length ? failed : undefined };
   }
 }

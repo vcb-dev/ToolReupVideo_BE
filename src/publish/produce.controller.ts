@@ -197,6 +197,7 @@ export class ProduceController {
       const res = await axios.post(
         `${AI_URL}/api/post_batch`,
         {
+          owner_id: req.user.id, // để job xếp đúng hàng đợi của người này
           items,
           post_targets: config.post_targets || [],
           platforms: body.platforms ?? [],
@@ -284,11 +285,12 @@ export class ProduceController {
    */
   @Post('cancel')
   @HttpCode(HttpStatus.OK)
-  async cancel() {
+  async cancel(@Req() req: any) {
     try {
+      // Chỉ huỷ job CỦA CHÍNH MÌNH — không đụng vào việc người khác đang chạy.
       const res = await axios.post(
         `${AI_URL}/api/cancel`,
-        {},
+        { owner_id: req.user.id },
         { timeout: 1000 * 15 },
       );
       return { ok: res.data?.ok !== false, note: res.data?.note };

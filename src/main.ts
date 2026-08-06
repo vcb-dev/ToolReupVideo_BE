@@ -56,6 +56,14 @@ async function bootstrap() {
     next();
   });
 
+  // Node mặc định requestTimeout = 300s tính cho TOÀN BỘ request KỂ CẢ body —
+  // một video 400 MB trên đường truyền chậm sẽ chết đúng phút thứ 5 và để lại
+  // file cụt. Tắt hẳn (0) vì upload có thể kéo dài; headersTimeout vẫn giữ để
+  // chặn client mở kết nối rồi không gửi gì.
+  const server = app.getHttpServer();
+  server.requestTimeout = Number(process.env.HTTP_REQUEST_TIMEOUT_MS || 0);
+  server.headersTimeout = 65_000;
+
   await app.listen(PORT);
   console.log(`🚀 Gateway API chạy tại ${SELF}`);
 }

@@ -1,17 +1,23 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
+import { StorageService } from '../storage/storage.service';
 
 @Injectable()
 export class ProxyService {
   private readonly logger = new Logger(ProxyService.name);
   private readonly aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
+  ) {}
 
-  async getState() {
+  async getState(ownerId?: string) {
     try {
-      const response = await axios.get(`${this.aiUrl}/api/state`);
+      const response = await axios.get(`${this.aiUrl}/api/state`, {
+        params: ownerId ? { owner: ownerId } : undefined,
+      });
       return response.data;
     } catch (error) {
       this.logger.error(`Error fetching state from AI Service: ${error.message}`);
@@ -26,12 +32,13 @@ export class ProxyService {
     }
   }
 
-  async ingest(user: string, max: number, platform = 'douyin') {
+  async ingest(user: string, max: number, platform = 'douyin', ownerId?: string) {
     try {
       const response = await axios.post(`${this.aiUrl}/api/ingest`, {
         user,
         max,
         platform,
+        owner_id: ownerId,
       });
       return response.data;
     } catch (error) {
@@ -100,16 +107,26 @@ export class ProxyService {
     // Tra drive_id từ DB trước — video cron cào chỉ có trong DB (không có trong
     // manifest AI), nên phải truyền drive_id để AI dọn đúng file storage.
     let driveId: string | null = null;
+    let isUpload = false;
     if (this.prisma.enabled) {
       try {
         const sv = await this.prisma.source_videos.findFirst({
           where: { owner_id: ownerId, platform_video_id: awemeId },
-          select: { drive_id: true },
+          select: { drive_id: true, platform: true },
         });
         driveId = sv?.drive_id ?? null;
+        isUpload = sv?.platform === 'upload';
       } catch (error) {
         this.logger.warn(`Tra drive_id lỗi (bỏ qua): ${error.message}`);
       }
+    }
+
+    // Video người dùng tự tải lên có kèm ảnh bìa nằm cạnh file — AI không biết
+    // tới nó, không xoá ở đây thì thumbnail đọng lại vĩnh viễn.
+    if (isUpload && driveId) {
+      await this.storage
+        .remove(StorageService.coverKeyFor(driveId))
+        .catch(() => undefined);
     }
     let aiOk = false;
     try {
@@ -155,6 +172,7 @@ export class ProxyService {
     platforms: string[],
     upload: boolean,
     opts: { auto_grammar?: boolean; remove_sensitive?: boolean } = {},
+    ownerId?: string,
   ) {
     try {
       const response = await axios.post(`${this.aiUrl}/api/process`, {
@@ -162,6 +180,7 @@ export class ProxyService {
         upload,
         auto_grammar: opts.auto_grammar ?? false,
         remove_sensitive: opts.remove_sensitive ?? false,
+        owner_id: ownerId,
       });
       return response.data;
     } catch (error) {

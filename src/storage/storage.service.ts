@@ -9,15 +9,23 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  HeadObjectCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { createHmac, timingSafeEqual } from 'crypto';
+import { mkdir, stat, unlink, writeFile } from 'fs/promises';
+import { dirname, join, resolve, sep } from 'path';
+
+/** Thao tác mà một link ký sẵn cho phép — đọc và ghi KHÔNG dùng chung chữ ký. */
+export type FileOp = 'get' | 'put';
 
 /**
  * Cấp "URL ký sẵn" (signed URL) để AI service PUT/GET file trực tiếp lên kho —
- * BE là NƠI DUY NHẤT giữ secret, AI không cần biết. Hỗ trợ 2 nhà cung cấp qua
+ * BE là NƠI DUY NHẤT giữ secret, AI không cần biết. Hỗ trợ 3 nhà cung cấp qua
  * env `STORAGE_PROVIDER`:
  *   • supabase (mặc định) — Supabase Storage REST
  *   • r2                  — Cloudflare R2 (tương thích S3), presigned URL SigV4
+ *   • local               — ổ đĩa của chính máy chạy BE (self-host)
  * Đổi provider KHÔNG cần sửa AI/FE (vẫn chỉ PUT/GET lên URL nhận được).
  */
 @Injectable()
@@ -36,11 +44,123 @@ export class StorageService {
   private readonly r2Bucket = process.env.R2_BUCKET || 'videos';
   private _s3: S3Client | null = null;
 
+  // ---- Local (ổ đĩa) ----
+  // Thư mục kho: PHẢI trỏ đúng thư mục mà AI service ghi vào
+  // (config.yaml -> storage.local_dir), vì hai bên dùng chung ổ đĩa.
+  private readonly localDir = resolve(
+    process.env.LOCAL_STORAGE_DIR || './storage/videos',
+  );
+  // Gốc URL cho link file mà AI SERVICE tải (nhạc/khung/logo). AI chạy cùng máy
+  // nên đi thẳng nội bộ, không vòng qua Internet.
+  // Link cho TRÌNH DUYỆT thì không dùng base này — xem `forBrowser` ở signDownload.
+  private readonly internalBase = (
+    process.env.INTERNAL_FILE_BASE_URL ||
+    `http://127.0.0.1:${process.env.PORT || 5001}`
+  ).replace(/\/$/, '');
+
   constructor() {
     this.logger.log(
       `Kho lưu video: STORAGE_PROVIDER=${this.provider}` +
-        (this.provider === 'r2' ? ` (bucket=${this.r2Bucket})` : ''),
+        (this.provider === 'r2' ? ` (bucket=${this.r2Bucket})` : '') +
+        (this.provider === 'local' ? ` (dir=${this.localDir})` : ''),
     );
+    if (this.provider === 'local') {
+      this.fileSecret(); // chết sớm lúc khởi động nếu thiếu secret, thay vì lúc user bấm xem
+    }
+  }
+
+  // ---------------- Local: đường dẫn + chữ ký ----------------
+
+  private fileSecret(): string {
+    const s =
+      process.env.FILE_URL_SECRET ||
+      process.env.INTERNAL_API_TOKEN ||
+      process.env.JWT_SECRET ||
+      '';
+    if (!s) {
+      throw new InternalServerErrorException(
+        'Kho local cần FILE_URL_SECRET (hoặc INTERNAL_API_TOKEN / JWT_SECRET) trong .env của Gateway.',
+      );
+    }
+    return s;
+  }
+
+  /**
+   * Đổi key -> đường dẫn tuyệt đối, CHẶN path traversal: key kiểu
+   * "../../etc/passwd" phải bị từ chối, không được đọc ra ngoài thư mục kho.
+   */
+  localPath(key: string): string {
+    const p = resolve(join(this.localDir, key));
+    if (p !== this.localDir && !p.startsWith(this.localDir + sep)) {
+      throw new InternalServerErrorException('Key không hợp lệ.');
+    }
+    return p;
+  }
+
+  /**
+   * Chữ ký GẮN VỚI THAO TÁC (`op`). Nếu ký chung cho cả đọc lẫn ghi thì một link
+   * xem video phát cho trình duyệt có thể bị dùng lại làm lệnh PUT ghi đè chính
+   * file đó — link đọc phải không bao giờ mở được đường ghi.
+   */
+  private sign(key: string, exp: string, op: FileOp = 'get'): string {
+    return createHmac('sha256', this.fileSecret())
+      .update(`${op}\n${key}\n${exp}`)
+      .digest('hex');
+  }
+
+  /** Kiểm tra chữ ký + hạn dùng của link file local, đúng thao tác yêu cầu. */
+  verifyFileToken(
+    key: string,
+    exp: string,
+    sig: string,
+    op: FileOp = 'get',
+  ): boolean {
+    if (!key || !exp || !sig) return false;
+    const deadline = Number(exp);
+    if (!Number.isFinite(deadline) || Date.now() > deadline) return false;
+    const want = Buffer.from(this.sign(key, exp, op));
+    const got = Buffer.from(sig);
+    // So sánh chống timing attack; độ dài lệch thì timingSafeEqual ném lỗi.
+    return want.length === got.length && timingSafeEqual(want, got);
+  }
+
+  // ---------------- Quy ước đặt key cho video người dùng tải lên ----------------
+  // Một nguồn sự thật cho init / commit / abort / xoá — không nơi nào tự ghép key.
+
+  /** Key video tải lên: gắn owner để không ai ghi đè được file của người khác. */
+  static uploadVideoKey(ownerId: string, pvid: string, ext: string): string {
+    return `uploads/${ownerId}/${pvid}${ext}`;
+  }
+
+  /** Ảnh bìa suy ra từ key video -> khỏi phải lưu thêm cột trong DB. */
+  static coverKeyFor(driveId: string): string {
+    return driveId.replace(/\.[^./]+$/, '') + '.jpg';
+  }
+
+  /**
+   * Dựng link ký sẵn cho file local.
+   * `forBrowser` = true -> trả ĐƯỜNG DẪN TƯƠNG ĐỐI ("/files/..."): trình duyệt tự
+   * ghép với origin đang mở, nên chạy đúng cả khi vào bằng localhost lẫn khi vào
+   * bằng domain tunnel, không cần khai báo domain ở đâu cả.
+   * `forBrowser` = false -> URL tuyệt đối trỏ nội bộ, cho AI service tải.
+   */
+  private localUrl(
+    key: string,
+    expiresIn: number,
+    ct?: string,
+    forBrowser = false,
+    op: FileOp = 'get',
+  ): string {
+    const exp = String(Date.now() + expiresIn * 1000);
+    const sig = this.sign(key, exp, op);
+    const path = key
+      .split('/')
+      .map((s) => encodeURIComponent(s))
+      .join('/');
+    const q = new URLSearchParams({ exp, sig });
+    if (ct) q.set('ct', ct);
+    const base = forBrowser ? '' : this.internalBase;
+    return `${base}/files/${path}?${q.toString()}`;
   }
 
   private s3(): S3Client {
@@ -74,13 +194,22 @@ export class StorageService {
   }
 
   /** URL ký sẵn để AI PUT file lên kho. */
-  async signUpload(key: string): Promise<string> {
+  async signUpload(
+    key: string,
+    expiresIn = 3600,
+    forBrowser = false,
+  ): Promise<string> {
     this.logger.log(`Ký upload (provider=${this.provider}): ${key}`);
+    if (this.provider === 'local') {
+      return this.localUrl(key, expiresIn, undefined, forBrowser, 'put');
+    }
     if (this.provider === 'r2') {
+      // Không gắn ContentType vào chữ ký: trình duyệt sẽ phải gửi header trùng
+      // khít từng byte, lệch một chút là R2 trả 403.
       return getSignedUrl(
         this.s3(),
         new PutObjectCommand({ Bucket: this.r2Bucket, Key: key }),
-        { expiresIn: 3600 },
+        { expiresIn },
       );
     }
     this.ensureSupabase();
@@ -101,7 +230,11 @@ export class StorageService {
     key: string,
     expiresIn = 3600,
     responseContentType?: string,
+    forBrowser = false,
   ): Promise<string> {
+    if (this.provider === 'local') {
+      return this.localUrl(key, expiresIn, responseContentType, forBrowser);
+    }
     if (this.provider === 'r2') {
       return getSignedUrl(
         this.s3(),
@@ -127,7 +260,46 @@ export class StorageService {
     return `${this.sbUrl}/storage/v1${res.data.signedURL}`;
   }
 
+  /**
+   * Kiểm tra object có thật + lấy dung lượng. Dùng ở bước commit để xác nhận
+   * client đã PUT xong và không bị cụt giữa chừng. `null` = chưa có.
+   */
+  async statObject(key: string): Promise<{ size: number } | null> {
+    if (this.provider === 'local') {
+      try {
+        return { size: (await stat(this.localPath(key))).size };
+      } catch {
+        return null;
+      }
+    }
+    if (this.provider === 'r2') {
+      try {
+        const r = await this.s3().send(
+          new HeadObjectCommand({ Bucket: this.r2Bucket, Key: key }),
+        );
+        return { size: Number(r.ContentLength ?? -1) };
+      } catch {
+        return null;
+      }
+    }
+    this.ensureSupabase();
+    try {
+      const r = await axios.head(
+        `${this.sbUrl}/storage/v1/object/authenticated/${this.sbBucket}/${encodeURI(key)}`,
+        { headers: this.sbHeaders() },
+      );
+      return { size: Number(r.headers['content-length'] ?? -1) };
+    } catch {
+      return null;
+    }
+  }
+
   async remove(key: string): Promise<void> {
+    if (this.provider === 'local') {
+      // Xoá tay rồi thì coi như xong (giống best-effort của các provider khác).
+      await unlink(this.localPath(key)).catch(() => undefined);
+      return;
+    }
     if (this.provider === 'r2') {
       await this.s3().send(
         new DeleteObjectCommand({ Bucket: this.r2Bucket, Key: key }),
@@ -147,6 +319,12 @@ export class StorageService {
     body: Buffer,
     contentType?: string,
   ): Promise<void> {
+    if (this.provider === 'local') {
+      const path = this.localPath(key);
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, body);
+      return;
+    }
     if (this.provider === 'r2') {
       await this.s3().send(
         new PutObjectCommand({

@@ -19,6 +19,7 @@ enum platform_source {
   youtube
   xiaohongshu
   facebook
+  upload // video người dùng tự tải lên (0019_platform_source_upload.sql)
 
   @@map("platform_source")
 }

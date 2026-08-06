@@ -21,20 +21,23 @@ export class ProxyController {
     private readonly deletePin: DeletePinService,
   ) {}
 
+  // Truyền owner xuống AI để mỗi người chỉ nhận tiến độ + log của JOB CỦA MÌNH.
   @Get('state')
-  async getState() {
-    return this.proxyService.getState();
+  async getState(@Req() req: any) {
+    return this.proxyService.getState(req.user.id);
   }
 
   @Post('ingest')
   @HttpCode(HttpStatus.OK)
   async ingest(
     @Body() body: { user: string; max?: number; platform?: string },
+    @Req() req: any,
   ) {
     return this.proxyService.ingest(
       body.user,
       body.max ?? 30,
       body.platform ?? 'douyin',
+      req.user.id,
     );
   }
 
@@ -90,10 +93,16 @@ export class ProxyController {
       auto_grammar?: boolean;
       remove_sensitive?: boolean;
     },
+    @Req() req: any,
   ) {
-    return this.proxyService.process(body.platforms, body.upload, {
-      auto_grammar: body.auto_grammar,
-      remove_sensitive: body.remove_sensitive,
-    });
+    return this.proxyService.process(
+      body.platforms,
+      body.upload,
+      {
+        auto_grammar: body.auto_grammar,
+        remove_sensitive: body.remove_sensitive,
+      },
+      req.user.id,
+    );
   }
 }

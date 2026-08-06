@@ -88,7 +88,12 @@ export class MediaController {
       asset.kind === 'music' || asset.kind === 'voice'
         ? 'audio/mpeg'
         : undefined;
-    const url = await this.storage.signDownload(asset.drive_id, 3600, ct);
+    const url = await this.storage.signDownload(
+      asset.drive_id,
+      3600,
+      ct,
+      true, // link cho trình duyệt (nghe thử nhạc / xem khung)
+    );
     return { ok: true, url };
   }
 

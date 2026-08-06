@@ -35,7 +35,12 @@ export class StoragePlayController {
     }
     // Link phát có hạn (1 giờ) — đủ để xem, không lộ vĩnh viễn. Ép video/mp4
     // để trình duyệt phát inline dù object R2 lưu không có content-type đúng.
-    const url = await this.storage.signDownload(sv.drive_id, 3600, 'video/mp4');
+    const url = await this.storage.signDownload(
+      sv.drive_id,
+      3600,
+      'video/mp4',
+      true, // link cho trình duyệt
+    );
     return { ok: true, url };
   }
 
@@ -54,6 +59,7 @@ export class StoragePlayController {
       pv.final_drive_id,
       3600,
       'video/mp4',
+      true, // link cho trình duyệt
     );
     return { ok: true, url };
   }
