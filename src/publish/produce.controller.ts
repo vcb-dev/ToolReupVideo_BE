@@ -59,7 +59,7 @@ export class ProduceController {
   ) {}
 
   /**
-   * Đổi frame_asset_id / music_asset_id trong config thành URL ký sẵn (R2) để
+   * Đổi frame_asset_id / music_asset_id trong config thành URL ký sẵn để
    * AI tải về. Verify asset thuộc đúng owner. Giữ nguyên các field config khác.
    */
   private async resolveMediaConfig(

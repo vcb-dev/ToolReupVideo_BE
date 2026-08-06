@@ -29,7 +29,7 @@ interface UploadFile {
 
 /**
  * Kho media (nhạc / khung / voice). Upload QUA BE: trình duyệt gửi multipart,
- * BE đẩy file nhạc/khung lên R2; với voice thì forward sang AI để MiniMax clone.
+ * BE lưu file nhạc/khung/logo/giọng vào kho; AI tải về qua link ký sẵn.
  */
 @UseGuards(SupabaseAuthGuard)
 @Controller('api/media')
@@ -56,7 +56,7 @@ export class MediaController {
       throw new BadRequestException('kind phải là music | frame | voice | logo.');
     }
 
-    // Mọi loại (kể cả voice) -> chỉ LƯU file lên R2. Với voice, file mẫu 3-8s này
+    // Mọi loại (kể cả voice) -> chỉ LƯU file vào kho. Với voice, file mẫu 3-8s này
     // được gửi thẳng cho AI ở lần sản xuất đầu (VieNeu nhân bản giọng ngay trên
     // máy và tự nhớ lại), không phải clone trước qua API nào cả.
     const ext = extname(file.originalname) || '';

@@ -27,7 +27,7 @@ export const MAX_UPLOAD_BYTES =
  *
  * KHÔNG gắn SupabaseAuthGuard: thẻ <video> của trình duyệt không gửi được header
  * Authorization. Thay vào đó mỗi URL mang chữ ký HMAC có hạn do StorageService
- * cấp — đúng vai trò của presigned URL bên R2/Supabase.
+ * cấp — đúng vai trò của presigned URL bên Supabase.
  *
  * Hỗ trợ HTTP Range (206) để tua video; thiếu nó thì video phát được nhưng
  * kéo thanh thời gian sẽ không nhảy.
@@ -105,7 +105,7 @@ export class LocalFilesController {
   }
 
   /**
-   * Nhận file PUT lên (tương ứng presigned PUT của R2). Client là AI service
+   * Nhận file PUT lên (tương ứng presigned PUT). Client là AI service
    * HOẶC trình duyệt của người dùng đang tải video lên — link ký sẵn (op=put)
    * là toàn bộ cơ chế xác thực, nên phải tự giới hạn dung lượng ở đây.
    */

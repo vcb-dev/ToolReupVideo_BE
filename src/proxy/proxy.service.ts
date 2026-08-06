@@ -96,7 +96,7 @@ export class ProxyService {
 
   /**
    * Xoá 1 video khỏi kho — dọn CẢ 3 nơi trong 1 thao tác:
-   *   1) AI: xoá file trên storage (R2/Supabase qua gateway) + bỏ khỏi manifest
+   *   1) AI: xoá file trên storage + bỏ khỏi manifest
    *   2) DB: xoá dòng source_videos của user (theo platform_video_id)
    * File/manifest là best-effort (đã xoá tay cũng không lỗi); DB xoá theo owner.
    */

@@ -4,14 +4,6 @@ import {
   Logger,
 } from '@nestjs/common';
 import axios from 'axios';
-import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  DeleteObjectCommand,
-  HeadObjectCommand,
-} from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { mkdir, stat, unlink, writeFile } from 'fs/promises';
 import { dirname, join, resolve, sep } from 'path';
@@ -21,11 +13,10 @@ export type FileOp = 'get' | 'put';
 
 /**
  * Cấp "URL ký sẵn" (signed URL) để AI service PUT/GET file trực tiếp lên kho —
- * BE là NƠI DUY NHẤT giữ secret, AI không cần biết. Hỗ trợ 3 nhà cung cấp qua
+ * BE là NƠI DUY NHẤT giữ secret, AI không cần biết. Hỗ trợ 2 nhà cung cấp qua
  * env `STORAGE_PROVIDER`:
- *   • supabase (mặc định) — Supabase Storage REST
- *   • r2                  — Cloudflare R2 (tương thích S3), presigned URL SigV4
  *   • local               — ổ đĩa của chính máy chạy BE (self-host)
+ *   • supabase            — Supabase Storage REST
  * Đổi provider KHÔNG cần sửa AI/FE (vẫn chỉ PUT/GET lên URL nhận được).
  */
 @Injectable()
@@ -39,10 +30,6 @@ export class StorageService {
   private readonly sbUrl = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
   private readonly sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
   private readonly sbBucket = process.env.SUPABASE_STORAGE_BUCKET || 'videos';
-
-  // ---- R2 (tương thích S3) ----
-  private readonly r2Bucket = process.env.R2_BUCKET || 'videos';
-  private _s3: S3Client | null = null;
 
   // ---- Local (ổ đĩa) ----
   // Thư mục kho: PHẢI trỏ đúng thư mục mà AI service ghi vào
@@ -61,7 +48,6 @@ export class StorageService {
   constructor() {
     this.logger.log(
       `Kho lưu video: STORAGE_PROVIDER=${this.provider}` +
-        (this.provider === 'r2' ? ` (bucket=${this.r2Bucket})` : '') +
         (this.provider === 'local' ? ` (dir=${this.localDir})` : ''),
     );
     if (this.provider === 'local') {
@@ -163,24 +149,6 @@ export class StorageService {
     return `${base}/files/${path}?${q.toString()}`;
   }
 
-  private s3(): S3Client {
-    if (this._s3) return this._s3;
-    const account = process.env.R2_ACCOUNT_ID || '';
-    const accessKeyId = process.env.R2_ACCESS_KEY_ID || '';
-    const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY || '';
-    if (!account || !accessKeyId || !secretAccessKey) {
-      throw new InternalServerErrorException(
-        'Thiếu R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY trong .env của Gateway.',
-      );
-    }
-    this._s3 = new S3Client({
-      region: 'auto',
-      endpoint: `https://${account}.r2.cloudflarestorage.com`,
-      credentials: { accessKeyId, secretAccessKey },
-    });
-    return this._s3;
-  }
-
   private sbHeaders() {
     return { apikey: this.sbKey, Authorization: `Bearer ${this.sbKey}` };
   }
@@ -203,15 +171,6 @@ export class StorageService {
     if (this.provider === 'local') {
       return this.localUrl(key, expiresIn, undefined, forBrowser, 'put');
     }
-    if (this.provider === 'r2') {
-      // Không gắn ContentType vào chữ ký: trình duyệt sẽ phải gửi header trùng
-      // khít từng byte, lệch một chút là R2 trả 403.
-      return getSignedUrl(
-        this.s3(),
-        new PutObjectCommand({ Bucket: this.r2Bucket, Key: key }),
-        { expiresIn },
-      );
-    }
     this.ensureSupabase();
     const res = await axios.post(
       `${this.sbUrl}/storage/v1/object/upload/sign/${this.sbBucket}/${encodeURI(key)}`,
@@ -223,8 +182,8 @@ export class StorageService {
 
   /**
    * URL ký sẵn để GET file (hết hạn sau expiresIn giây). `responseContentType`
-   * (chỉ R2) ép Content-Type khi trả về — để trình duyệt PHÁT inline (video/mp4)
-   * dù object lưu không có content-type đúng. Đường tải nội bộ của AI bỏ trống.
+   * ép Content-Type khi trả về — để trình duyệt PHÁT inline (video/mp4) dù file
+   * lưu không có content-type đúng. Đường tải nội bộ của AI bỏ trống.
    */
   async signDownload(
     key: string,
@@ -234,22 +193,6 @@ export class StorageService {
   ): Promise<string> {
     if (this.provider === 'local') {
       return this.localUrl(key, expiresIn, responseContentType, forBrowser);
-    }
-    if (this.provider === 'r2') {
-      return getSignedUrl(
-        this.s3(),
-        new GetObjectCommand({
-          Bucket: this.r2Bucket,
-          Key: key,
-          ...(responseContentType
-            ? {
-                ResponseContentType: responseContentType,
-                ResponseContentDisposition: 'inline',
-              }
-            : {}),
-        }),
-        { expiresIn },
-      );
     }
     this.ensureSupabase();
     const res = await axios.post(
@@ -272,16 +215,6 @@ export class StorageService {
         return null;
       }
     }
-    if (this.provider === 'r2') {
-      try {
-        const r = await this.s3().send(
-          new HeadObjectCommand({ Bucket: this.r2Bucket, Key: key }),
-        );
-        return { size: Number(r.ContentLength ?? -1) };
-      } catch {
-        return null;
-      }
-    }
     this.ensureSupabase();
     try {
       const r = await axios.head(
@@ -298,12 +231,6 @@ export class StorageService {
     if (this.provider === 'local') {
       // Xoá tay rồi thì coi như xong (giống best-effort của các provider khác).
       await unlink(this.localPath(key)).catch(() => undefined);
-      return;
-    }
-    if (this.provider === 'r2') {
-      await this.s3().send(
-        new DeleteObjectCommand({ Bucket: this.r2Bucket, Key: key }),
-      );
       return;
     }
     this.ensureSupabase();
@@ -323,17 +250,6 @@ export class StorageService {
       const path = this.localPath(key);
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, body);
-      return;
-    }
-    if (this.provider === 'r2') {
-      await this.s3().send(
-        new PutObjectCommand({
-          Bucket: this.r2Bucket,
-          Key: key,
-          Body: body,
-          ContentType: contentType,
-        }),
-      );
       return;
     }
     this.ensureSupabase();

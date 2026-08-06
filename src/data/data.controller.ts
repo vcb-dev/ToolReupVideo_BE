@@ -31,7 +31,7 @@ const RESOURCE_MODEL = {
 
 type ResourceKey = keyof typeof RESOURCE_MODEL;
 
-// Cột chứa key file trên kho (R2/Supabase). Xoá bản ghi thì xoá luôn file gốc,
+// Cột chứa key file trên kho. Xoá bản ghi thì xoá luôn file gốc,
 // nếu không file nằm lại vĩnh viễn và vẫn tính dung lượng dù web không còn thấy.
 const FILE_KEY_FIELDS: Record<string, string[]> = {
   source_videos: ['drive_id'],
