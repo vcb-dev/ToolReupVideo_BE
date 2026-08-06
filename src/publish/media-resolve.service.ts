@@ -1,16 +1,14 @@
 import { Injectable } from '@nestjs/common';
-import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 
-const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
-
 /**
  * Resolve các ASSET trong Kho ra dạng AI dùng được — dùng chung cho Xưởng video
- * (produce.controller) và cron tự động (automation.service):
+ * (produce.controller) và cron tự động (automation.service). Tất cả đều thành
+ * URL ký sẵn để AI tự tải:
  *
- *  - voice_asset_id -> voice_id MiniMax (clone 1 lần, cache vào media_assets).
- *  - frame_asset_id / music_asset_id -> URL ký sẵn R2 (frame_url / music_url).
+ *  - frame_asset_id / music_asset_id / logo_asset_id -> frame_url / music_url / logo_url
+ *  - voice_asset_id -> voice_ref_url + voice_id "asset:<uuid>"
  */
 @Injectable()
 export class MediaResolveService {
@@ -57,51 +55,19 @@ export class MediaResolveService {
       }
       delete c.logo_asset_id;
     }
+    if (c.voice_asset_id) {
+      const va = await this.prisma.media_assets.findFirst({
+        where: { id: c.voice_asset_id, owner_id: ownerId, kind: 'voice' },
+      });
+      if (va?.drive_id) {
+        // VieNeu nhân bản giọng ngay trên máy từ mẫu 3-8s, KHÔNG cần clone trước
+        // qua API bên thứ ba -> chỉ cần đưa AI đường tải file mẫu là đủ.
+        c.voice_ref_url = await this.storage.signDownload(va.drive_id, 3600);
+        c.voice_id = `asset:${va.id}`;
+      }
+      delete c.voice_asset_id;
+    }
     return c;
   }
 
-  /** Trả voice_id (cache hoặc clone mới) — null nếu asset không hợp lệ/clone lỗi. */
-  async resolveVoiceId(
-    ownerId: string,
-    voiceAssetId: string,
-  ): Promise<string | null> {
-    const va = await this.prisma.media_assets.findFirst({
-      where: { id: voiceAssetId, owner_id: ownerId, kind: 'voice' },
-    });
-    if (!va) return null;
-    let vid = va.voice_id;
-    if (!vid && va.drive_id) {
-      vid = await this.cloneFromAsset(va);
-      if (vid) {
-        await this.prisma.media_assets.update({
-          where: { id: va.id },
-          data: { voice_id: vid },
-        });
-      }
-    }
-    return vid || null;
-  }
-
-  /**
-   * Clone giọng từ mẫu đã lưu (R2) qua AI /api/voice/clone. Trả voice_id hoặc
-   * null nếu lỗi. Tên voice ổn định theo asset để idempotent.
-   */
-  private async cloneFromAsset(asset: any): Promise<string | null> {
-    try {
-      const url = await this.storage.signDownload(asset.drive_id, 600);
-      const dl = await axios.get(url, { responseType: 'arraybuffer' });
-      const buf = Buffer.from(dl.data);
-      const voiceName = `voice_${String(asset.id).replace(/-/g, '').slice(0, 20)}`;
-      const form = new FormData();
-      form.append('file', new Blob([new Uint8Array(buf)]), 'sample.mp3');
-      form.append('voice_id', voiceName);
-      const res = await axios.post(`${AI_URL}/api/voice/clone`, form, {
-        timeout: 1000 * 300,
-      });
-      if (res.data?.ok && res.data?.voice_id) return res.data.voice_id;
-      return null;
-    } catch {
-      return null;
-    }
-  }
 }

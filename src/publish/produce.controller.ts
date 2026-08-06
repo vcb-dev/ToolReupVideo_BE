@@ -105,12 +105,6 @@ export class ProduceController {
       if (aff?.url) c.affiliate_url = aff.url;
       delete c.affiliate_id;
     }
-    if (c.voice_asset_id) {
-      // Clone 1 lần + cache voice_id — logic chung nằm ở MediaResolveService.
-      const vid = await this.media.resolveVoiceId(ownerId, c.voice_asset_id);
-      if (vid) c.voice_id = vid;
-      delete c.voice_asset_id;
-    }
     return c;
   }
 

@@ -56,8 +56,9 @@ export class MediaController {
       throw new BadRequestException('kind phải là music | frame | voice | logo.');
     }
 
-    // Mọi loại (kể cả voice) -> chỉ LƯU file lên R2. Voice sẽ được clone ở lần
-    // sản xuất đầu tiên (khi user chọn voice), rồi cache voice_id lại.
+    // Mọi loại (kể cả voice) -> chỉ LƯU file lên R2. Với voice, file mẫu 3-8s này
+    // được gửi thẳng cho AI ở lần sản xuất đầu (VieNeu nhân bản giọng ngay trên
+    // máy và tự nhớ lại), không phải clone trước qua API nào cả.
     const ext = extname(file.originalname) || '';
     const key = `media/${kind}/${ownerId}/${randomUUID()}${ext}`;
     try {

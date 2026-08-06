@@ -193,16 +193,9 @@ export class AutomationService {
         ...(rule.video_config || {}),
       },
     );
-    // Giọng lồng = giọng upload trong Kho (không còn giọng hệ thống mặc định).
-    // Đổi voice_asset_id -> voice_id (clone 1 lần rồi cache) như Xưởng video.
-    if (config.voice_asset_id) {
-      const vid = await this.media.resolveVoiceId(
-        rule.owner_id,
-        config.voice_asset_id,
-      );
-      if (vid) config.voice_id = vid;
-      delete config.voice_asset_id;
-    }
+    // voice_asset_id (giọng Kho) đã được resolveFrameMusic đổi thành
+    // voice_id "asset:<uuid>" + voice_ref_url. Giọng sẵn của VieNeu thì FE gửi
+    // thẳng voice_id "preset:<tên>".
     if (!config.voice_id) {
       throw new Error(
         'Quy tắc chưa có giọng lồng — sửa quy tắc và chọn giọng trong Kho.',
