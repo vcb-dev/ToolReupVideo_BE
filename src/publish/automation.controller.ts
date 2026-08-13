@@ -22,6 +22,7 @@ import { isValidHhmm } from './vn-time';
 type RuleBody = {
   name?: string;
   kind?: string; // 'produce' | 'post' | 'reup'
+  post_source?: string; // post: 'processed' (thành phẩm) | 'raw' (video gốc)
   batch_size?: number;
   stock_target?: number;
   recency_days?: number; // reup: chỉ lấy video đăng trong N ngày gần nhất
@@ -65,26 +66,45 @@ export class AutomationController {
   }
 
   /**
-   * Các cụm chủ đề trong Kho kèm số video CHƯA sản xuất — form chọn nguồn cần
+   * Các cụm chủ đề trong Kho kèm số video còn dùng được — form chọn nguồn cần
    * con số này để user biết chủ đề nào còn hàng mà lên lịch.
+   *
+   *  - `available`     : chưa sản xuất  -> quy tắc sản xuất / reup.
+   *  - `available_raw` : chưa đăng thẳng -> quy tắc đăng video gốc.
+   *
+   * Liệt kê MỌI chủ đề có video còn file, kể cả khi đã sản xuất hết: quy tắc
+   * đăng video gốc vẫn dùng được những chủ đề đó.
    */
   @Get('topics')
   async topics(@Req() req: any) {
-    const rows = await this.prisma.source_videos.findMany({
-      where: {
-        owner_id: req.user.id,
-        drive_id: { not: null },
-        processed: { none: {} },
-      },
-      select: { topic: true },
-    });
-    const count = new Map<string, number>();
-    for (const r of rows) {
-      const key = r.topic?.trim() || ''; // '' = chưa phân loại
-      count.set(key, (count.get(key) || 0) + 1);
-    }
-    const topics = [...count.entries()]
-      .map(([topic, available]) => ({ topic, available }))
+    const owner_id = req.user.id;
+    const base = { owner_id, drive_id: { not: null } };
+    const [all, unproduced, unscheduled] = await Promise.all([
+      this.prisma.source_videos.findMany({ where: base, select: { topic: true } }),
+      this.prisma.source_videos.findMany({
+        where: { ...base, processed: { none: {} } },
+        select: { topic: true },
+      }),
+      this.prisma.source_videos.findMany({
+        where: { ...base, schedules: { none: {} } },
+        select: { topic: true },
+      }),
+    ]);
+
+    const key = (t: string | null) => t?.trim() || ''; // '' = chưa phân loại
+    const tally = (rows: { topic: string | null }[]) => {
+      const m = new Map<string, number>();
+      for (const r of rows) m.set(key(r.topic), (m.get(key(r.topic)) || 0) + 1);
+      return m;
+    };
+    const produced = tally(unproduced);
+    const raw = tally(unscheduled);
+    const topics = [...new Set(all.map((r) => key(r.topic)))]
+      .map((topic) => ({
+        topic,
+        available: produced.get(topic) || 0,
+        available_raw: raw.get(topic) || 0,
+      }))
       .sort((a, b) => a.topic.localeCompare(b.topic));
     return { ok: true, topics };
   }
@@ -228,6 +248,16 @@ export class AutomationController {
       }
       if (b.topics !== undefined || full) {
         out.topics = [...new Set(b.topics || [])];
+      }
+      // Đăng thành phẩm đã lồng tiếng, hay đăng thẳng video gốc trong kho.
+      if (b.post_source !== undefined || full) {
+        const src = b.post_source ?? current?.post_source ?? 'processed';
+        if (!['processed', 'raw'].includes(src)) {
+          throw new BadRequestException(
+            'Loại video đem đăng không hợp lệ (processed | raw).',
+          );
+        }
+        out.post_source = src;
       }
       if (full) {
         out.pick_mode = 'any';

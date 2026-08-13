@@ -50,14 +50,18 @@ export class ProxyService {
     }
   }
 
-  async scan(user: string, max: number, platform = 'douyin') {
+  async scan(user: string, max: number, platform = 'douyin', ownerId?: string) {
     try {
       const response = await axios.post(`${this.aiUrl}/api/scan`, {
         user,
         max,
         platform,
       });
-      return response.data;
+      const data = response.data;
+      if (data?.ok && Array.isArray(data.videos)) {
+        data.videos = await this.markSaved(data.videos, ownerId);
+      }
+      return data;
     } catch (error) {
       this.logger.error(`Error calling scan on AI Service: ${error.message}`);
       return {
@@ -66,6 +70,32 @@ export class ProxyService {
           error.response?.data?.error ||
           `Không thể kết nối dịch vụ AI: ${error.message}`,
       };
+    }
+  }
+
+  /**
+   * Đặt lại cờ `saved` theo KHO THẬT của user (bảng source_videos), ghi đè cờ
+   * mà AI suy ra từ manifest.json.
+   *
+   * Manifest là file cục bộ của AI, dùng chung mọi user và chỉ được dọn khi lời
+   * gọi /api/delete tới được AI. Xoá video khỏi kho mà manifest còn sót thì lần
+   * quét sau vẫn báo "Đã lưu" và không cho lưu lại — DB mới là nguồn sự thật.
+   */
+  private async markSaved(videos: any[], ownerId?: string) {
+    if (!ownerId || !this.prisma.enabled || videos.length === 0) return videos;
+    const ids = videos.map((v) => v?.aweme_id).filter(Boolean);
+    if (ids.length === 0) return videos;
+    try {
+      const rows = await this.prisma.source_videos.findMany({
+        where: { owner_id: ownerId, platform_video_id: { in: ids } },
+        select: { platform_video_id: true },
+      });
+      const saved = new Set(rows.map((r) => r.platform_video_id));
+      return videos.map((v) => ({ ...v, saved: saved.has(v.aweme_id) }));
+    } catch (error) {
+      // Không tra được DB -> giữ nguyên cờ của AI, thà báo thừa còn hơn hỏng quét.
+      this.logger.warn(`Tra kho để đánh dấu "đã lưu" lỗi: ${error.message}`);
+      return videos;
     }
   }
 

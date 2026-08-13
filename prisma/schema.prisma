@@ -166,6 +166,8 @@ model source_videos {
 
   /// Khoá ngoại đã có sẵn trong DB từ 0001; khai ở đây để lọc "chưa sản xuất".
   processed processed_videos[]
+  /// Lịch đăng THẲNG video gốc này (không qua sản xuất) — để lọc "chưa đăng".
+  schedules schedules[]
 
   @@unique([owner_id, platform, platform_video_id])
   @@map("source_videos")
@@ -235,7 +237,10 @@ model jobs {
 model schedules {
   id                 String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   owner_id           String          @db.Uuid
-  processed_video_id String          @db.Uuid
+  /// Đích đăng: MỘT trong hai — thành phẩm đã lồng tiếng, hoặc video gốc trong
+  /// kho (0021_post_raw_source.sql). Ràng buộc check ở DB lo việc luôn có 1 cái.
+  processed_video_id String?         @db.Uuid
+  source_video_id    String?         @db.Uuid
   page_id            String          @db.Uuid
   caption            String?
   publish_at         DateTime        @db.Timestamptz(6)
@@ -251,7 +256,8 @@ model schedules {
   updated_at         DateTime        @default(now()) @db.Timestamptz(6)
 
   rule      automation_rules? @relation(fields: [rule_id], references: [id])
-  processed processed_videos  @relation(fields: [processed_video_id], references: [id], onDelete: Cascade)
+  processed processed_videos? @relation(fields: [processed_video_id], references: [id], onDelete: Cascade)
+  source    source_videos?    @relation(fields: [source_video_id], references: [id], onDelete: Cascade)
 
   @@index([rule_id])
   @@map("schedules")
@@ -266,6 +272,9 @@ model automation_rules {
   /// 'produce' = tự sản xuất để sẵn kho | 'post' = tự đăng thành phẩm có sẵn |
   /// 'reup' = chọn video mới nhất trong N ngày -> sản xuất -> tự đăng (trọn gói).
   kind         String   @default("produce")
+  /// post: 'processed' = đăng thành phẩm đã lồng tiếng | 'raw' = đăng thẳng
+  /// video gốc trong kho (không qua sản xuất).
+  post_source  String   @default("processed")
   /// produce: số video mỗi lượt + trần kho thành phẩm (đủ rồi thì bỏ lượt).
   batch_size   Int      @default(1)
   stock_target Int      @default(10)
@@ -368,6 +377,19 @@ model metrics {
   collected_at       DateTime @default(now()) @db.Timestamptz(6)
 
   @@map("metrics")
+}
+
+/// Thư mục chủ đề của kho video (0020_topics.sql). Tách khỏi cột
+/// source_videos.topic để tạo được thư mục RỖNG và xoá thư mục mà không mất video.
+model topics {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id   String   @db.Uuid
+  name       String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([owner_id, name])
+  @@map("topics")
 }
 
 model templates {

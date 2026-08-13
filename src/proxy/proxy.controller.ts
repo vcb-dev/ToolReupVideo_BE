@@ -46,11 +46,15 @@ export class ProxyController {
   @HttpCode(HttpStatus.OK)
   async scan(
     @Body() body: { user: string; max?: number; platform?: string },
+    @Req() req: any,
   ) {
+    // Truyền owner để cờ "đã lưu" chấm theo kho của chính user, không theo
+    // manifest dùng chung của AI.
     return this.proxyService.scan(
       body.user,
       body.max ?? 30,
       body.platform ?? 'douyin',
+      req.user.id,
     );
   }
 

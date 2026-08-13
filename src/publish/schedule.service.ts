@@ -61,10 +61,24 @@ export class ScheduleService {
       data: { status: 'publishing' },
     });
 
-    const pv = await this.prisma.processed_videos.findUnique({
-      where: { id: schedule.processed_video_id },
-    });
-    if (!pv) throw new Error('Thiếu processed_video');
+    // Lịch trỏ tới thành phẩm, hoặc tới VIDEO GỐC trong kho (đăng nguyên bản).
+    let driveId: string | null = null;
+    let localPath: string | null = null;
+    if (schedule.processed_video_id) {
+      const pv = await this.prisma.processed_videos.findUnique({
+        where: { id: schedule.processed_video_id },
+      });
+      if (!pv) throw new Error('Thiếu processed_video');
+      driveId = pv.final_drive_id;
+      localPath = pv.final_path;
+    } else {
+      const sv = await this.prisma.source_videos.findUnique({
+        where: { id: schedule.source_video_id },
+      });
+      if (!sv) throw new Error('Thiếu source_video');
+      driveId = sv.drive_id;
+    }
+    if (!driveId && !localPath) throw new Error('Video chưa có file trong kho');
 
     // Đăng theo PAGE (kèm token nếu page nối API FB). Trước đây chỉ gửi
     // `platforms` -> AI luôn đi upload-post và bỏ qua Page token.
@@ -74,8 +88,8 @@ export class ScheduleService {
     const res = await axios.post(
       `${AI_URL}/api/post`,
       {
-        final_drive_id: pv.final_drive_id,
-        final_path: pv.final_path,
+        final_drive_id: driveId,
+        final_path: localPath,
         post_target: target,
         title: schedule.caption || '',
         description: schedule.caption || '',

@@ -107,10 +107,22 @@ export class AutomationService {
     const { start, end } = this.vnDayRange(now);
     const rows = await this.prisma.schedules.findMany({
       where: { rule_id: rule.id, publish_at: { gte: start, lt: end } },
-      select: { processed_video_id: true },
-      distinct: ['processed_video_id'],
+      select: { processed_video_id: true, source_video_id: true },
     });
-    return rows.length;
+    // Lịch trỏ tới thành phẩm HOẶC video gốc -> đếm phân biệt trên cả hai cột.
+    return new Set(
+      rows.map((r) => r.processed_video_id ?? r.source_video_id),
+    ).size;
+  }
+
+  /** Điều kiện lọc theo cụm chủ đề (dùng cho cả video gốc lẫn video nguồn của
+   *  thành phẩm). '' = nhóm "chưa phân loại"; trong DB topic có thể '' HOẶC null. */
+  private topicWhere(topics: string[]): Record<string, any> {
+    const named = topics.filter((t) => t !== '');
+    const or: any[] = [];
+    if (named.length) or.push({ topic: { in: named } });
+    if (topics.includes('')) or.push({ topic: null }, { topic: '' });
+    return or.length ? { OR: or } : {};
   }
 
   /** Điều kiện lọc source_videos theo phạm vi user chọn (kênh / chủ đề / tick tay). */
@@ -120,13 +132,7 @@ export class AutomationService {
       return rule.source_channel_id ? { channel_id: rule.source_channel_id } : { id: null };
     }
     if (rule.pick_mode === 'topics') {
-      // '' = nhóm "chưa phân loại"; trong DB topic có thể là '' HOẶC null.
-      const topics: string[] = rule.topics || [];
-      const named = topics.filter((t) => t !== '');
-      const or: any[] = [];
-      if (named.length) or.push({ topic: { in: named } });
-      if (topics.includes('')) or.push({ topic: null }, { topic: '' });
-      return or.length ? { OR: or } : {};
+      return this.topicWhere(rule.topics || []);
     }
     if (rule.pick_mode === 'videos') {
       return { id: { in: rule.source_video_ids || [] } };
@@ -266,6 +272,7 @@ export class AutomationService {
     const slot = this.dueSlot(rule, now);
     if (!slot) return;
 
+    const raw = rule.post_source === 'raw';
     const pages = await this.prisma.pages.findMany({
       where: { id: { in: rule.page_ids }, owner_id: rule.owner_id, is_active: true },
     });
@@ -303,12 +310,15 @@ export class AutomationService {
         break; // đủ hạn mức ngày -> dừng rải thêm page
       }
 
-      const pv = await this.pickReadyVideo(rule);
-      if (!pv) {
+      // 'raw' = đăng thẳng video gốc trong kho, không cần thành phẩm.
+      const item = raw
+        ? { sv: await this.pickReadyRawVideo(rule) }
+        : { pv: await this.pickReadyVideo(rule) };
+      if (!item.pv && !item.sv) {
         ranOut = true;
-        break; // hết thành phẩm, các page sau cũng vậy
+        break; // hết video, các page sau cũng vậy
       }
-      await this.queuePost(rule, pv, page, slot);
+      await this.queuePost(rule, item, page, slot);
       queued++;
     }
     if (queued) {
@@ -317,7 +327,11 @@ export class AutomationService {
     await this.finish(
       rule,
       slot,
-      ranOut ? 'Hết video thành phẩm chưa đăng — cần quy tắc sản xuất bù.' : null,
+      ranOut
+        ? raw
+          ? 'Hết video gốc chưa đăng trong kho (theo chủ đề đã chọn) — cào thêm hoặc bỏ bớt bộ lọc chủ đề.'
+          : 'Hết video thành phẩm chưa đăng — cần quy tắc sản xuất bù.'
+        : null,
       queued > 0
         ? `Đặt ${queued} lịch đăng.${hitLimit ? ' (đã đủ hạn mức ngày)' : ''}`
         : null,
@@ -327,14 +341,25 @@ export class AutomationService {
   /** Tạo 1 dòng schedules (pending) cho 1 thành phẩm + 1 page ở khung giờ slot.
    *  Dùng chung cho quy tắc post lẫn reup. Link affiliate KHÔNG vào caption —
    *  ScheduleService đăng thành bình luận dưới bài sau khi đăng xong. */
-  private async queuePost(rule: any, pv: any, page: any, slot: Date): Promise<void> {
-    const sv = await this.prisma.source_videos.findUnique({
-      where: { id: pv.source_video_id },
-      select: { descr: true },
-    });
-    // Ưu tiên AI caption tóm tắt từ transcript nếu quy tắc bật ai_caption và pv có ai_caption
+  private async queuePost(
+    rule: any,
+    item: { pv?: any; sv?: any },
+    page: any,
+    slot: Date,
+  ): Promise<void> {
+    const pv = item.pv ?? null;
+    // Đăng video gốc thì đã có sẵn bản ghi nguồn; đăng thành phẩm thì tra ngược
+    // về video nguồn để lấy mô tả gốc làm caption.
+    const sv =
+      item.sv ??
+      (await this.prisma.source_videos.findUnique({
+        where: { id: pv.source_video_id },
+        select: { descr: true },
+      }));
+    // Ưu tiên AI caption tóm tắt từ transcript nếu quy tắc bật ai_caption và pv
+    // có ai_caption (video gốc chưa qua sản xuất nên không có, dùng mô tả gốc).
     let baseDescr = sv?.descr ?? null;
-    if (rule.ai_caption) {
+    if (rule.ai_caption && pv) {
       baseDescr = pv.ai_caption?.trim() || baseDescr;
     }
     // Sinh hashtag per-video bằng Gemini nếu quy tắc bật ai_hashtags.
@@ -344,7 +369,8 @@ export class AutomationService {
     await this.prisma.schedules.create({
       data: {
         owner_id: rule.owner_id,
-        processed_video_id: pv.id,
+        processed_video_id: pv?.id ?? null,
+        source_video_id: item.sv?.id ?? null,
         page_id: page.id,
         caption: this.caption(rule, baseDescr, aiHashtags),
         publish_at: slot,
@@ -405,7 +431,7 @@ export class AutomationService {
         where: { rule_id: rule.id, page_id: page.id, publish_at: slot },
       });
       if (exists) continue;
-      await this.queuePost(rule, pv, page, slot);
+      await this.queuePost(rule, { pv }, page, slot);
       queued++;
     }
     this.logger.log(
@@ -459,15 +485,7 @@ export class AutomationService {
    * video nguồn, cũ nhất trước.
    */
   private async pickReadyVideo(rule: any) {
-    const topics: string[] = rule.topics || [];
-    const scope: Record<string, any> = {};
-    if (topics.length) {
-      const named = topics.filter((t) => t !== '');
-      const or: any[] = [];
-      if (named.length) or.push({ topic: { in: named } });
-      if (topics.includes('')) or.push({ topic: null }, { topic: '' });
-      if (or.length) scope.OR = or;
-    }
+    const scope = this.topicWhere(rule.topics || []);
     return this.prisma.processed_videos.findFirst({
       where: {
         owner_id: rule.owner_id,
@@ -476,6 +494,26 @@ export class AutomationService {
         ...(Object.keys(scope).length ? { source: scope } : {}),
       },
       orderBy: { produced_at: 'asc' },
+    });
+  }
+
+  /**
+   * Video GỐC trong kho đem đăng nguyên bản (post_source='raw'): có file, chưa
+   * từng lên lịch đăng thẳng lần nào, lọc theo chủ đề, cũ nhất trước.
+   *
+   * Chỉ xét lịch trỏ THẲNG vào nó — video đã dựng thành phẩm rồi đăng bản dựng
+   * vẫn được đăng bản gốc, đó là hai bài khác nhau.
+   */
+  private async pickReadyRawVideo(rule: any) {
+    const scope = this.topicWhere(rule.topics || []);
+    return this.prisma.source_videos.findFirst({
+      where: {
+        owner_id: rule.owner_id,
+        drive_id: { not: null },
+        schedules: { none: {} },
+        ...scope,
+      },
+      orderBy: { crawled_at: 'asc' },
     });
   }
 
