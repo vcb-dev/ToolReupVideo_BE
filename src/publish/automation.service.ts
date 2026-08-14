@@ -202,7 +202,8 @@ export class AutomationService {
     // voice_asset_id (giọng Kho) đã được resolveFrameMusic đổi thành
     // voice_id "asset:<uuid>" + voice_ref_url. Giọng sẵn của VieNeu thì FE gửi
     // thẳng voice_id "preset:<tên>".
-    if (!config.voice_id) {
+    // Chế độ "chỉ dịch chữ trên video" không lồng tiếng -> không cần giọng.
+    if (!config.sub_only && !config.voice_id) {
       throw new Error(
         'Quy tắc chưa có giọng lồng — sửa quy tắc và chọn giọng trong Kho.',
       );
@@ -356,15 +357,22 @@ export class AutomationService {
         where: { id: pv.source_video_id },
         select: { descr: true },
       }));
-    // Ưu tiên AI caption tóm tắt từ transcript nếu quy tắc bật ai_caption và pv
-    // có ai_caption (video gốc chưa qua sản xuất nên không có, dùng mô tả gốc).
-    let baseDescr = sv?.descr ?? null;
-    if (rule.ai_caption && pv) {
-      baseDescr = pv.ai_caption?.trim() || baseDescr;
+    // Mô tả gốc của nguồn (Douyin/TikTok) luôn kèm hashtag tiếng Trung. Bỏ tag
+    // khỏi phần chữ ĐEM ĐĂNG (hashtag được dựng riêng ở dưới), nhưng vẫn giữ
+    // bản NGUYÊN VẸN cho AI: nhiều video mô tả chỉ toàn hashtag, bóc hết đi là
+    // AI không còn gì để đọc -> bài đăng trắng trơn không caption lẫn hashtag.
+    const rawDescr = sv?.descr?.trim() || null;
+    let baseDescr = this.stripHashtags(rawDescr);
+    if (rule.ai_caption) {
+      // Thành phẩm đã có caption AI (viết từ transcript tiếng Việt) thì dùng
+      // luôn. Video gốc chưa qua sản xuất -> nhờ AI viết lại caption tiếng Việt
+      // từ mô tả gốc, nếu không caption đăng lên vẫn nguyên tiếng Trung.
+      const stored = pv?.ai_caption?.trim();
+      baseDescr = stored || (await this.fetchAiCaption(rawDescr)) || baseDescr;
     }
     // Sinh hashtag per-video bằng Gemini nếu quy tắc bật ai_hashtags.
     const aiHashtags = rule.ai_hashtags
-      ? await this.fetchAiHashtags(baseDescr)
+      ? await this.fetchAiHashtags(baseDescr || rawDescr)
       : '';
     await this.prisma.schedules.create({
       data: {
@@ -485,7 +493,7 @@ export class AutomationService {
    * video nguồn, cũ nhất trước.
    */
   private async pickReadyVideo(rule: any) {
-    const scope = this.topicWhere(rule.topics || []);
+    const scope = this.sourceScope(rule);
     return this.prisma.processed_videos.findFirst({
       where: {
         owner_id: rule.owner_id,
@@ -505,7 +513,7 @@ export class AutomationService {
    * vẫn được đăng bản gốc, đó là hai bài khác nhau.
    */
   private async pickReadyRawVideo(rule: any) {
-    const scope = this.topicWhere(rule.topics || []);
+    const scope = this.sourceScope(rule);
     return this.prisma.source_videos.findFirst({
       where: {
         owner_id: rule.owner_id,
@@ -531,6 +539,36 @@ export class AutomationService {
     return [descr?.trim() || '', hashtagStr]
       .filter(Boolean)
       .join('\n');
+  }
+
+  /** Bỏ mọi hashtag khỏi mô tả gốc (giữ lại phần chữ). */
+  private stripHashtags(descr: string | null): string | null {
+    if (!descr) return null;
+    const text = descr
+      .replace(/#[^\s#]+/g, ' ')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{2,}/g, '\n')
+      .trim();
+    return text || null;
+  }
+
+  /**
+   * Nhờ AI viết caption tiếng Việt từ mô tả gốc (video gốc không có transcript).
+   * Lỗi thì trả '' để nơi gọi rơi về mô tả gốc — không được cản luồng đăng bài.
+   */
+  private async fetchAiCaption(descr: string | null): Promise<string> {
+    if (!descr?.trim()) return '';
+    try {
+      const res = await axios.post(
+        `${AI_URL}/api/caption`,
+        { descr: descr.trim() },
+        { timeout: 60_000 },
+      );
+      return (res.data?.caption || '').trim();
+    } catch (e: any) {
+      this.logger.warn(`Sinh AI caption lỗi (dùng mô tả gốc): ${e.message}`);
+      return '';
+    }
   }
 
   /**

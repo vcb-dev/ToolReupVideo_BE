@@ -232,8 +232,9 @@ export class AutomationController {
     if (b.kind !== undefined || full) out.kind = kind;
 
     if (kind === 'post') {
-      // ĐĂNG BÀI: bắt buộc page đích. `topics` là BỘ LỌC thành phẩm (rỗng = mọi
-      // chủ đề), không phải nguồn sản xuất -> không đụng pick_mode.
+      // ĐĂNG BÀI: bắt buộc page đích. Nguồn video chọn y như quy tắc sản xuất
+      // (any/channel/topics/videos) — chỉ khác là lọc cái ĐEM ĐĂNG chứ không
+      // phải cái đem sản xuất.
       if (b.page_ids !== undefined || full) {
         const ids = b.page_ids || [];
         if (!ids.length) throw new BadRequestException('Chọn ít nhất 1 page đích.');
@@ -246,9 +247,7 @@ export class AutomationController {
         }
         out.page_ids = ids;
       }
-      if (b.topics !== undefined || full) {
-        out.topics = [...new Set(b.topics || [])];
-      }
+      await this.applySourceScope(b, current, ownerId, full, out);
       // Đăng thành phẩm đã lồng tiếng, hay đăng thẳng video gốc trong kho.
       if (b.post_source !== undefined || full) {
         const src = b.post_source ?? current?.post_source ?? 'processed';
@@ -258,10 +257,6 @@ export class AutomationController {
           );
         }
         out.post_source = src;
-      }
-      if (full) {
-        out.pick_mode = 'any';
-        out.source_video_ids = [];
       }
       if (b.daily_limit !== undefined || full) {
         out.daily_limit = this.normDailyLimit(b.daily_limit);
