@@ -363,12 +363,15 @@ export class AutomationService {
     // AI không còn gì để đọc -> bài đăng trắng trơn không caption lẫn hashtag.
     const rawDescr = sv?.descr?.trim() || null;
     let baseDescr = this.stripHashtags(rawDescr);
-    if (rule.ai_caption) {
-      // Thành phẩm đã có caption AI (viết từ transcript tiếng Việt) thì dùng
-      // luôn. Video gốc chưa qua sản xuất -> nhờ AI viết lại caption tiếng Việt
-      // từ mô tả gốc, nếu không caption đăng lên vẫn nguyên tiếng Trung.
-      const stored = pv?.ai_caption?.trim();
-      baseDescr = stored || (await this.fetchAiCaption(rawDescr)) || baseDescr;
+    
+    // Ưu tiên 1: Video thành phẩm đã có ai_caption Tiếng Việt từ transcript
+    const stored = pv?.ai_caption?.trim();
+    const isForeign = rawDescr && /[\u4e00-\u9fa5\u3040-\u30ff]/.test(rawDescr);
+    if (stored) {
+      baseDescr = stored;
+    } else if (rule.ai_caption || isForeign) {
+      // Ưu tiên 2: Bật ai_caption hoặc phát hiện mô tả gốc chứa chữ Trung/Nhật -> nhờ AI viết caption Tiếng Việt
+      baseDescr = (await this.fetchAiCaption(rawDescr)) || baseDescr;
     }
     // Sinh hashtag per-video bằng Gemini nếu quy tắc bật ai_hashtags.
     const aiHashtags = rule.ai_hashtags

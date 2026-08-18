@@ -180,7 +180,7 @@ export class ProduceController {
       items.push({
         final_drive_id: pv.final_drive_id,
         final_path: pv.final_path,
-        desc: edited ?? descById.get(pv.source_video_id) ?? '',
+        desc: edited ?? pv.ai_caption ?? descById.get(pv.source_video_id) ?? '',
       });
     }
     if (items.length === 0) {
