@@ -31,6 +31,7 @@ const OVERRIDE_KEYS = [
   'speed',
   'cover_boxes',
   'cover_feather',
+  'cover_blur',
 ] as const;
 
 /** Lọc trắng ghi đè của 1 video. Trả undefined khi không còn khoá hợp lệ. */
