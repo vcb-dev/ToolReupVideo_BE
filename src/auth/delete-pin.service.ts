@@ -31,6 +31,15 @@ export class DeletePinService {
     });
   }
 
+  /** Tắt khoá xoá: xoá mã đã lưu -> nhân viên xoá không cần PIN nữa. */
+  async clearPin(): Promise<void> {
+    await this.prisma.app_config.upsert({
+      where: { key: KEY },
+      update: { value: null, updated_at: new Date() },
+      create: { key: KEY, value: null },
+    });
+  }
+
   /** Nhân viên cần nhập PIN không (PIN đã đặt và user không phải admin). */
   async requiredFor(user: any): Promise<boolean> {
     if (user?.is_admin) return false;

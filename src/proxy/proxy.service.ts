@@ -56,6 +56,8 @@ export class ProxyService {
         user,
         max,
         platform,
+        // AI dùng owner_id để ghi log vào đúng bảng điều khiển của người này.
+        owner_id: ownerId,
       });
       const data = response.data;
       if (data?.ok && Array.isArray(data.videos)) {
@@ -162,7 +164,7 @@ export class ProxyService {
     try {
       const res = await axios.post(
         `${this.aiUrl}/api/delete`,
-        { aweme_id: awemeId, drive_id: driveId },
+        { aweme_id: awemeId, drive_id: driveId, owner_id: ownerId },
         { timeout: 60000 },
       );
       aiOk = !!res.data?.ok;

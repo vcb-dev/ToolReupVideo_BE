@@ -103,6 +103,15 @@ export class AuthController {
     return { ok: true, isSet: await this.deletePin.isSet() };
   }
 
+  /** TẮT khoá xoá. Không đòi PIN cũ: chỉ admin gọi được route này. */
+  @Delete('delete-pin')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(SupabaseAuthGuard, AdminGuard)
+  async clearDeletePin() {
+    await this.deletePin.clearPin();
+    return { ok: true };
+  }
+
   // Mọi user đã đăng nhập: có phải nhập PIN khi xoá không (để FE quyết định UI).
   @Get('delete-pin/required')
   @UseGuards(SupabaseAuthGuard)

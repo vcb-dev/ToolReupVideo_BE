@@ -100,11 +100,26 @@ export class FacebookService {
   }
 
   /**
-   * `auth_type=rerequest` BẮT Facebook hiện lại màn "Chọn Trang".
+   * `auth_type=rerequest` CHỈ bắt FB hỏi lại những quyền user đã TỪ CHỐI.
    *
-   * Không có nó, FB im lặng dùng lại tập page đã cấp ở lần đầu -> page tạo sau
-   * (hoặc page không tick lần đó) KHÔNG BAO GIỜ xuất hiện dù đăng nhập lại,
-   * và /me/accounts cứ trả về y hệt một con số.
+   * Nó KHÔNG mở lại màn "Chọn Trang" — đừng trông vào đó để nối thêm page.
+   * Meta áp granular page permissions: /me/accounts chỉ trả về đúng tập page
+   * user tick ở lần cấp quyền ĐẦU TIÊN. Đăng nhập lại, FB thấy app đã được cấp
+   * đủ quyền nên bỏ qua màn chọn trang và im lặng dùng lại tập cũ -> page tạo
+   * sau (hoặc page không tick lần đó) không bao giờ tự xuất hiện, dù bấm "Nối
+   * thêm page" bao nhiêu lần.
+   *
+   * Muốn thêm page: user phải tự sửa ở facebook.com -> Cài đặt -> Ứng dụng và
+   * trang web -> app này -> "Xem và chỉnh sửa" -> tick thêm page. FE phát hiện
+   * phiên không có page mới và chỉ đường sang đó (xem FacebookConnect.tsx).
+   *
+   * Cách duy nhất ép FB hiện lại màn chọn trang từ phía app là DELETE
+   * /me/permissions để xoá sạch grant — nhưng làm vậy mọi Page token của nick
+   * đó chết theo, các page đang nối ngừng đăng được. Cố ý KHÔNG làm ngầm.
+   *
+   * Vẫn giữ rerequest vì nó có ích ở nhánh khác: user bấm "Không cho phép" một
+   * quyền (hay gặp với pages_manage_engagement chưa được duyệt) thì lần sau
+   * còn hỏi lại được.
    */
   loginUrl(ownerId: string): string {
     this.assertConfigured();
@@ -176,6 +191,44 @@ export class FacebookService {
     }
     this.log.log(`Lấy được ${out.length} page từ /me/accounts.`);
     return out;
+  }
+
+  /**
+   * Gỡ app khỏi một nick Facebook: xoá sạch grant bên FB, kể cả TẬP PAGE đã tick.
+   *
+   * Đây là cách duy nhất bắt FB hiện lại màn "Chọn Trang" ở lần đăng nhập sau
+   * (xem loginUrl): sau khi thu hồi, FB coi như user cấp quyền lần đầu.
+   *
+   * Dùng APP access token (`app_id|app_secret`) — endpoint này nhận app token
+   * nên KHÔNG cần user token (BE không lưu user token, chỉ lưu Page token).
+   *
+   * Hệ quả: mọi Page token sinh ra từ grant này chết ngay. Page trong DB giữ
+   * nguyên (lịch + quy tắc tự động còn sống), token tự lành khi user nối lại.
+   * Vì vậy CHỈ gọi khi user bấm nút có xác nhận, không bao giờ chạy ngầm.
+   */
+  async revokeUser(fbUserId: string): Promise<void> {
+    this.assertConfigured();
+    try {
+      const res = await axios.delete(
+        `${GRAPH}/${encodeURIComponent(fbUserId)}/permissions`,
+        {
+          params: { access_token: `${this.appId}|${this.appSecret}` },
+          timeout: 20000,
+        },
+      );
+      // FB trả {"success": true}; khác đi coi như chưa thu hồi được.
+      if (res.data?.success !== true) {
+        throw new BadRequestException(
+          'Facebook không xác nhận thu hồi. Thử lại, hoặc gỡ app tay trong ' +
+            'Cài đặt > Ứng dụng và trang web.',
+        );
+      }
+      this.log.log(`Đã thu hồi quyền app khỏi nick FB ${fbUserId}.`);
+    } catch (e: any) {
+      if (e instanceof BadRequestException) throw e;
+      const msg = e?.response?.data?.error?.message || e?.message || 'lỗi không rõ';
+      throw new BadRequestException(`Thu hồi quyền thất bại: ${msg}`);
+    }
   }
 
   /** Nick FB ứng với user token — FE hiện lên để biết list là của tài khoản nào. */

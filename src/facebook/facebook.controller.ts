@@ -15,6 +15,7 @@ import type { Response } from 'express';
 import { SupabaseAuthGuard } from '../auth/auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { FacebookService, FbAccount, FbPage, FbSession } from './facebook.service';
+import { PENDING_TTL_MS, pendingKey } from './pending';
 
 // Origin FE để giới hạn postMessage sau OAuth. Ưu tiên FRONTEND_URL nếu có,
 // nếu không thì lấy domain đầu tiên trong CORS_ORIGINS (thường là FE chính) —
@@ -23,16 +24,6 @@ const FRONTEND_URL =
   process.env.FRONTEND_URL ||
   (process.env.CORS_ORIGINS || '').split(',')[0].trim() ||
   '';
-
-/** Khoá lưu tạm danh sách page vừa lấy được sau khi đăng nhập (kèm token). */
-const pendingKey = (ownerId: string) => `fb_pending:${ownerId}`;
-
-/**
- * Bản tạm sống tối đa 30': đủ rộng để chọn trong hàng trăm page, nhưng không
- * để token nằm lại vô hạn khi user đăng nhập xong rồi bỏ dở (bản tạm chứa token
- * của MỌI page, kể cả page không định nối).
- */
-const PENDING_TTL_MS = 30 * 60 * 1000;
 
 /**
  * Kết nối Facebook cho tab "Quản lý Page".
@@ -191,6 +182,46 @@ export class FacebookController {
   }
 
   /**
+   * Thu hồi quyền của MỘT nick FB để lần đăng nhập sau hiện lại màn "Chọn Trang".
+   *
+   * Cố ý KHÔNG xoá gì trong DB: `savePages` tra theo `external_id`, còn dòng cũ
+   * thì nối lại sẽ update token tại chỗ và dùng lại đúng `pages.id` -> lịch đã
+   * đăng và `automation_rules.page_ids` (mảng uuid, KHÔNG có khoá ngoại nên xoá
+   * page là nó trỏ vào id chết) đều còn nguyên.
+   */
+  @UseGuards(SupabaseAuthGuard)
+  @Post('revoke')
+  @HttpCode(HttpStatus.OK)
+  async revoke(@Body() body: { fb_user_id?: string }, @Req() req: any) {
+    const fbUserId = (body.fb_user_id || '').trim();
+    if (!fbUserId) throw new BadRequestException('Thiếu fb_user_id.');
+
+    // Chặn đầu tiên: chỉ thu hồi được nick ĐANG NỐI VỚI TÀI KHOẢN NÀY. Thiếu
+    // bước này thì ai đăng nhập vào tool cũng gửi được fb_user_id bất kỳ và gỡ
+    // app khỏi tài khoản Facebook của người khác.
+    const own = await this.prisma.page_credentials.findMany({
+      where: {
+        owner_id: req.user.id,
+        provider: 'facebook_graph',
+        fb_user_id: fbUserId,
+      },
+      select: { page_id: true },
+    });
+    if (own.length === 0) {
+      throw new BadRequestException('Nick này không thuộc tài khoản của bạn.');
+    }
+
+    await this.fb.revokeUser(fbUserId);
+
+    // Bản tạm cũ phải đi theo: để lại thì vòng hỏi /pending của FE phục vụ đúng
+    // danh sách page cũ của nick vừa thu hồi, coi như chưa làm gì.
+    await this.prisma.app_config.deleteMany({
+      where: { key: pendingKey(req.user.id) },
+    });
+    return { ok: true, pages: own.length };
+  }
+
+  /**
    * Lưu các page user đã chọn: tạo/cập nhật `pages` + `page_credentials`.
    * Chạy xong xoá bản tạm (không giữ token thừa trong app_config).
    */
@@ -218,39 +249,71 @@ export class FacebookController {
 
     let saved = 0;
     for (const p of chosen) {
+      try {
+        await this.connectPage(req.user.id, p, account, body.group_name);
+      } catch (e: any) {
+        // Unique index (owner_id, external_id) của migration 0023: một request
+        // song song vừa nối đúng page này xong. Dòng `pages` vừa tạo đã bị
+        // transaction cuốn lại -> chỉ cần cập nhật token lên dòng của bên kia.
+        if (e?.code !== 'P2002') throw e;
+        await this.connectPage(req.user.id, p, account, body.group_name);
+      }
+      saved++;
+    }
+
+    await this.prisma.app_config.delete({
+      where: { key: pendingKey(req.user.id) },
+    });
+    return { ok: true, saved };
+  }
+
+  /**
+   * Nối MỘT page: tạo/cập nhật `pages` + ghi token vào `page_credentials`.
+   *
+   * Chạy trong transaction vì hai bảng phải cùng sống hoặc cùng chết: nếu bước
+   * ghi token vấp unique index thì dòng `pages` vừa tạo cũng phải biến mất,
+   * không thì tab Quản lý Page hiện một page rỗng vĩnh viễn không đăng được.
+   */
+  private async connectPage(
+    ownerId: string,
+    p: FbPage,
+    account: FbAccount,
+    groupName?: string,
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
       // Đã kết nối page này trước đó -> cập nhật token, không tạo dòng trùng.
-      const existing = await this.prisma.page_credentials.findFirst({
+      const existing = await tx.page_credentials.findFirst({
         where: {
-          owner_id: req.user.id,
+          owner_id: ownerId,
           provider: 'facebook_graph',
           external_id: p.id,
         },
       });
       let pageId = existing?.page_id;
       if (pageId) {
-        await this.prisma.pages.update({
+        await tx.pages.update({
           where: { id: pageId },
           data: { page_name: p.name, updated_at: new Date() },
         });
       } else {
-        const created = await this.prisma.pages.create({
+        const created = await tx.pages.create({
           data: {
-            owner_id: req.user.id,
+            owner_id: ownerId,
             platform: 'facebook',
             page_name: p.name,
             provider: 'facebook_graph',
-            group_name: body.group_name?.trim() || null,
+            group_name: groupName?.trim() || null,
             is_active: true,
           },
         });
         pageId = created.id;
       }
       // Nick đi kèm token: nối lại page bằng nick khác thì token VÀ nick cùng đổi.
-      await this.prisma.page_credentials.upsert({
+      await tx.page_credentials.upsert({
         where: { page_id: pageId },
         create: {
           page_id: pageId,
-          owner_id: req.user.id,
+          owner_id: ownerId,
           provider: 'facebook_graph',
           external_id: p.id,
           access_token: p.access_token,
@@ -266,12 +329,6 @@ export class FacebookController {
           updated_at: new Date(),
         },
       });
-      saved++;
-    }
-
-    await this.prisma.app_config.delete({
-      where: { key: pendingKey(req.user.id) },
     });
-    return { ok: true, saved };
   }
 }
