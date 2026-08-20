@@ -37,11 +37,11 @@ export class CrawlController {
       throw new NotFoundException('Không tìm thấy kênh');
     }
     try {
-      const { inserted } = await this.crawl.crawlChannel(
+      const { inserted, crawled, duplicates } = await this.crawl.crawlChannel(
         channel as any,
         max ? Number(max) : undefined,
       );
-      return { ok: true, inserted };
+      return { ok: true, inserted, crawled, duplicates };
     } catch (e: any) {
       return { ok: false, error: e.message };
     }

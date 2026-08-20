@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import axios from 'axios';
 import { SupabaseAuthGuard } from '../auth/auth.guard';
+import { jobOwner } from '../auth/job-owner';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { MediaResolveService } from './media-resolve.service';
@@ -192,14 +193,17 @@ export class ProduceController {
       const res = await axios.post(
         `${AI_URL}/api/post_batch`,
         {
-          owner_id: req.user.id, // để job xếp đúng hàng đợi của người này
+          owner_id: req.user.id,
+          // Khoá hàng đợi theo NGƯỜI THẬT. owner_id có thể là id kho dùng chung
+          // (giống nhau ở mọi tài khoản) -> lấy nó thì hai người chặn nhau.
+          job_owner: jobOwner(req),
           items,
           post_targets: config.post_targets || [],
           platforms: body.platforms ?? [],
           hashtags: config.hashtags || '',
           affiliate_url: config.affiliate_url || '',
         },
-        { timeout: 1000 * 30 },
+        { timeout: 1000 * 120 },
       );
       if (!res.data?.ok) {
         return { ok: false, error: res.data?.error || 'AI post_batch thất bại' };
@@ -255,6 +259,7 @@ export class ProduceController {
         `${AI_URL}/api/produce_batch`,
         {
           owner_id: req.user.id,
+          job_owner: jobOwner(req),
           items,
           platforms: body.platforms ?? [],
           upload: body.upload ?? false,
@@ -262,7 +267,7 @@ export class ProduceController {
           remove_sensitive: body.remove_sensitive ?? false,
           config,
         },
-        { timeout: 1000 * 30 },
+        { timeout: 1000 * 120 },
       );
       if (!res.data?.ok) {
         return { ok: false, error: res.data?.error || 'AI produce_batch thất bại' };

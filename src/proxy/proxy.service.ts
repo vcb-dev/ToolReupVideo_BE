@@ -13,10 +13,11 @@ export class ProxyService {
     private readonly storage: StorageService,
   ) {}
 
-  async getState(ownerId?: string) {
+  async getState(ownerId?: string, jobOwner?: string) {
     try {
       const response = await axios.get(`${this.aiUrl}/api/state`, {
-        params: ownerId ? { owner: ownerId } : undefined,
+        // Trạng thái job theo NGƯỜI THẬT, không theo chủ kho (kho có thể dùng chung).
+        params: (jobOwner ?? ownerId) ? { owner: jobOwner ?? ownerId } : undefined,
       });
       return response.data;
     } catch (error) {
@@ -32,13 +33,14 @@ export class ProxyService {
     }
   }
 
-  async ingest(user: string, max: number, platform = 'douyin', ownerId?: string) {
+  async ingest(user: string, max: number, platform = 'douyin', ownerId?: string, jobOwner?: string) {
     try {
       const response = await axios.post(`${this.aiUrl}/api/ingest`, {
         user,
         max,
         platform,
         owner_id: ownerId,
+        job_owner: jobOwner ?? ownerId,
       });
       return response.data;
     } catch (error) {
@@ -50,14 +52,16 @@ export class ProxyService {
     }
   }
 
-  async scan(user: string, max: number, platform = 'douyin', ownerId?: string) {
+  async scan(user: string, max: number, platform = 'douyin', ownerId?: string, jobOwner?: string) {
     try {
       const response = await axios.post(`${this.aiUrl}/api/scan`, {
         user,
         max,
         platform,
-        // AI dùng owner_id để ghi log vào đúng bảng điều khiển của người này.
         owner_id: ownerId,
+        // Khoá job + định tuyến log theo NGƯỜI THẬT: owner_id có thể giống nhau
+        // ở mọi tài khoản khi bật kho dùng chung -> hai người sẽ chặn nhau.
+        job_owner: jobOwner ?? ownerId,
       });
       const data = response.data;
       if (data?.ok && Array.isArray(data.videos)) {
@@ -106,12 +110,13 @@ export class ProxyService {
    * không bị treo. AI xong sẽ gọi ngược /internal/source-videos ghi DB (kèm
    * owner_id). Truyền owner_id xuống AI để job nền biết ghi cho user nào.
    */
-  async save(platform: string, videos: any[], ownerId: string, topic?: string) {
+  async save(platform: string, videos: any[], ownerId: string, topic?: string, jobOwner?: string) {
     try {
       const response = await axios.post(`${this.aiUrl}/api/save`, {
         platform,
         videos,
         owner_id: ownerId,
+        job_owner: jobOwner ?? ownerId,
         topic: topic ?? null,
       });
       return response.data;
@@ -205,6 +210,7 @@ export class ProxyService {
     upload: boolean,
     opts: { auto_grammar?: boolean; remove_sensitive?: boolean } = {},
     ownerId?: string,
+    jobOwner?: string,
   ) {
     try {
       const response = await axios.post(`${this.aiUrl}/api/process`, {
@@ -213,6 +219,7 @@ export class ProxyService {
         auto_grammar: opts.auto_grammar ?? false,
         remove_sensitive: opts.remove_sensitive ?? false,
         owner_id: ownerId,
+        job_owner: jobOwner ?? ownerId,
       });
       return response.data;
     } catch (error) {

@@ -72,7 +72,7 @@ export class CrawlService {
   async crawlChannel(
     channel: Channel,
     max = DEFAULT_MAX,
-  ): Promise<{ inserted: number }> {
+  ): Promise<{ inserted: number; crawled: number; duplicates: number }> {
     const { rows, meta } = await this.crawlFromAi(channel, max);
     const res = rows.length
       ? await this.prisma.source_videos.createMany({
@@ -84,7 +84,14 @@ export class CrawlService {
       where: { id: channel.id },
       data: { last_crawled_at: new Date(), ...this.channelMetaUpdate(meta) },
     });
-    return { inserted: res.count };
+    // Trả CẢ BA số, đừng chỉ trả `inserted`. `skipDuplicates` âm thầm bỏ video
+    // đã có trong thư viện, nên xin 200 mà báo 124 thì người dùng không thể biết
+    // là kênh chỉ có 124, hay cào đủ 200 nhưng 76 cái đã có sẵn.
+    return {
+      inserted: res.count,
+      crawled: rows.length,
+      duplicates: rows.length - res.count,
+    };
   }
 
   /** Cron: mỗi ngày cào toàn bộ kênh đang theo dõi (mọi user). */

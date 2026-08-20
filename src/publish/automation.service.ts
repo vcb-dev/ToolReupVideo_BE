@@ -377,19 +377,29 @@ export class AutomationService {
     const aiHashtags = rule.ai_hashtags
       ? await this.fetchAiHashtags(baseDescr || rawDescr)
       : '';
-    await this.prisma.schedules.create({
-      data: {
-        owner_id: rule.owner_id,
-        processed_video_id: pv?.id ?? null,
-        source_video_id: item.sv?.id ?? null,
-        page_id: page.id,
-        caption: this.caption(rule, baseDescr, aiHashtags),
-        publish_at: slot,
-        status: 'pending',
-        rule_id: rule.id,
-        affiliate_id: rule.affiliate_id || null,
-      },
-    });
+    try {
+      await this.prisma.schedules.create({
+        data: {
+          owner_id: rule.owner_id,
+          processed_video_id: pv?.id ?? null,
+          source_video_id: item.sv?.id ?? null,
+          page_id: page.id,
+          caption: this.caption(rule, baseDescr, aiHashtags),
+          publish_at: slot,
+          status: 'pending',
+          rule_id: rule.id,
+          affiliate_id: rule.affiliate_id || null,
+        },
+      });
+    } catch (e: any) {
+      if (e?.code === 'P2002' || e?.message?.includes('Unique constraint failed')) {
+        this.logger.warn(
+          `Lịch đăng cho page "${page.page_name || page.id}" lúc ${slot.toISOString()} đã được tạo trước đó.`,
+        );
+        return;
+      }
+      throw e;
+    }
   }
 
   // ---------------- REUP TRỌN GÓI (sản xuất + đăng ngay) ----------------

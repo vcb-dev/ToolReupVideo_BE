@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { ProxyService } from './proxy.service';
 import { SupabaseAuthGuard } from '../auth/auth.guard';
+import { jobOwner } from '../auth/job-owner';
 import { DeletePinService } from '../auth/delete-pin.service';
 
 // Toàn bộ route xử lý video yêu cầu đăng nhập
@@ -24,7 +25,7 @@ export class ProxyController {
   // Truyền owner xuống AI để mỗi người chỉ nhận tiến độ + log của JOB CỦA MÌNH.
   @Get('state')
   async getState(@Req() req: any) {
-    return this.proxyService.getState(req.user.id);
+    return this.proxyService.getState(req.user.id, jobOwner(req));
   }
 
   @Post('ingest')
@@ -38,6 +39,7 @@ export class ProxyController {
       body.max ?? 30,
       body.platform ?? 'douyin',
       req.user.id,
+      jobOwner(req),
     );
   }
 
@@ -55,6 +57,7 @@ export class ProxyController {
       body.max ?? 30,
       body.platform ?? 'douyin',
       req.user.id,
+      jobOwner(req),
     );
   }
 
@@ -70,6 +73,7 @@ export class ProxyController {
       body.videos ?? [],
       req.user.id,
       body.topic,
+      jobOwner(req),
     );
   }
 
@@ -107,6 +111,7 @@ export class ProxyController {
         remove_sensitive: body.remove_sensitive,
       },
       req.user.id,
+      jobOwner(req),
     );
   }
 }
