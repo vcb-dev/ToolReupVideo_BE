@@ -93,7 +93,16 @@ export class ProxyService {
     if (ids.length === 0) return videos;
     try {
       const rows = await this.prisma.source_videos.findMany({
-        where: { owner_id: ownerId, platform_video_id: { in: ids } },
+        // `drive_id: not null` — chỉ đánh dấu "đã lưu" khi THẬT SỰ có file trong
+        // kho. Dòng DB mà mất file thì phải cho tải lại, không thì người dùng
+        // thấy nó xám đi (không chọn được) mà bấm xem lại báo thiếu file.
+        // Khớp với điều kiện known_ids bên CrawlService — hai luồng phải hiểu
+        // "đã có" giống hệt nhau, lệch nhau là hành vi khó đoán.
+        where: {
+          owner_id: ownerId,
+          platform_video_id: { in: ids },
+          drive_id: { not: null },
+        },
         select: { platform_video_id: true },
       });
       const saved = new Set(rows.map((r) => r.platform_video_id));

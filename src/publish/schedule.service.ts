@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import axios from 'axios';
+import { CRON_ENABLED } from '../cron-guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { PostTargetService } from './post-target.service';
 
@@ -9,10 +10,22 @@ const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
 /**
  * Cron quét các lịch đến hạn (status=pending, publish_at<=now) và đăng bài.
  * Chạy nền qua Prisma (không có phiên user). Thiếu DATABASE_URL -> no-op.
+ *
+ * CHỐNG ĐĂNG TRÙNG — đăng 1 video mất vài phút, trong khi cron nổ mỗi phút và
+ * có thể có NHIỀU tiến trình BE cùng trỏ về một DB. Hai chốt:
+ *
+ *  1. `running`: một tiến trình không tự chồng lượt lên chính mình. Trước đây
+ *     lượt lúc T đọc [s1, s2] rồi đăng s1 mất 2 phút; lượt T+60 đọc lại thấy s2
+ *     VẪN pending nên đăng s2, xong lượt T quay lại cũng đăng s2 -> lên kênh 2 bài.
+ *  2. `claim()`: đổi pending -> publishing bằng MỘT câu UPDATE có điều kiện.
+ *     Chỉ tiến trình nào đổi được (count=1) mới đăng. Đây là chốt duy nhất chặn
+ *     được tiến trình BE khác; đọc-rồi-ghi như bản cũ luôn có khe hở.
  */
 @Injectable()
 export class ScheduleService {
   private readonly logger = new Logger(ScheduleService.name);
+  /** Khoá mềm: đăng lâu, không để lượt cron sau chồng lên lượt đang chạy. */
+  private running = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -21,8 +34,18 @@ export class ScheduleService {
 
   @Cron(CronExpression.EVERY_MINUTE, { name: 'post-due-schedules' })
   async postDueSchedules(): Promise<void> {
-    if (!this.prisma.enabled) return; // im lặng khi chưa cấu hình DB
+    // im lặng khi chưa cấu hình DB / tiến trình này tắt cron
+    if (!CRON_ENABLED || !this.prisma.enabled || this.running) return;
+    this.running = true;
+    try {
+      await this.drainDue();
+    } finally {
+      this.running = false;
+    }
+  }
 
+  /** Quét và đăng các lịch đến hạn (đã nắm khoá `running`). */
+  private async drainDue(): Promise<void> {
     let due: any[] = [];
     try {
       due = await this.prisma.withRetry(
@@ -40,6 +63,12 @@ export class ScheduleService {
     this.logger.log(`Có ${due.length} lịch đến hạn, bắt đầu đăng...`);
 
     for (const s of due) {
+      // Nhận việc TRƯỚC khi làm: ai đổi được pending -> publishing thì người đó
+      // đăng. Lịch đã bị tiến trình khác (hoặc lượt trước) nhận thì bỏ qua.
+      if (!(await this.claim(s.id))) {
+        this.logger.debug?.(`Lịch ${s.id} đã có nơi khác nhận — bỏ qua.`);
+        continue;
+      }
       try {
         await this.postOne(s);
       } catch (e: any) {
@@ -54,13 +83,25 @@ export class ScheduleService {
     }
   }
 
-  private async postOne(schedule: any): Promise<void> {
-    // đánh dấu đang đăng để cron phút sau không lấy trùng
-    await this.prisma.schedules.update({
-      where: { id: schedule.id },
-      data: { status: 'publishing' },
-    });
+  /**
+   * Giành quyền đăng 1 lịch: pending -> publishing trong MỘT câu UPDATE có điều
+   * kiện (Postgres tự khoá dòng). Trả về true nếu chính mình giành được.
+   */
+  private async claim(id: string): Promise<boolean> {
+    try {
+      const { count } = await this.prisma.schedules.updateMany({
+        where: { id, status: 'pending' },
+        data: { status: 'publishing' },
+      });
+      return count === 1;
+    } catch (e: any) {
+      this.logger.error(`Không nhận được lịch ${id}: ${e.message}`);
+      return false;
+    }
+  }
 
+  private async postOne(schedule: any): Promise<void> {
+    // Trạng thái 'publishing' đã được claim() đặt trước khi vào đây.
     // Lịch trỏ tới thành phẩm, hoặc tới VIDEO GỐC trong kho (đăng nguyên bản).
     let driveId: string | null = null;
     let localPath: string | null = null;

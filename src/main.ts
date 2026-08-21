@@ -13,9 +13,23 @@ import { AppModule } from './app.module';
   return this.toNumber();
 };
 
+// Trần body JSON. Express mặc định 100kb — QUÁ NHỎ cho app này: đo thật
+// 2026-08-21, mỗi video trong danh sách quét nặng ~1 KB (desc + link ảnh bìa đã
+// ký), nên chọn 100 video để lưu đã là ~102 KB và BE ném PayloadTooLargeError.
+// Chọn 200-500 video là chuyện bình thường -> 200-510 KB.
+//
+// Nâng lên đây KHÔNG mở đường cho upload file: video đi qua PUT stream vào
+// /files/*, còn nhạc/khung đi multipart (FileInterceptor tự chặn ở 60 MB).
+// Không có luồng hợp lệ nào gửi file dưới dạng JSON.
+const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || '10mb';
+
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
   app.enableShutdownHooks();
+
+  const express = await import('express');
+  app.use(express.json({ limit: JSON_BODY_LIMIT }));
+  app.use(express.urlencoded({ limit: JSON_BODY_LIMIT, extended: true }));
 
   // Security headers cơ bản (X-Frame-Options, HSTS, X-Content-Type-Options, ...)
   app.use(helmet());

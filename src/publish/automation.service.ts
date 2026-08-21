@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import axios from 'axios';
+import { CRON_ENABLED } from '../cron-guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { MediaResolveService } from './media-resolve.service';
+import { upsertProcessed } from './processed-upsert';
 import { vnParts, vnTimeToUtc } from './vn-time';
 
 const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
@@ -36,7 +38,7 @@ export class AutomationService {
 
   @Cron(CronExpression.EVERY_MINUTE, { name: 'automation-tick' })
   async tick(): Promise<void> {
-    if (!this.prisma.enabled || this.running) return;
+    if (!CRON_ENABLED || !this.prisma.enabled || this.running) return;
     this.running = true;
     try {
       const rules = await this.prisma.withRetry(
@@ -89,6 +91,40 @@ export class AutomationService {
     }
     if (best && rule.last_slot_at && best <= rule.last_slot_at) return null;
     return best;
+  }
+
+  /**
+   * GIÀNH khung giờ đến hạn — trả về khung nếu chính mình nhận được việc, null
+   * nếu chưa tới giờ hoặc nơi khác đã nhận.
+   *
+   * Vì sao phải claim trước khi làm: cờ `running` chỉ chặn được chính tiến
+   * trình này. Đo ngày 2026-08-21 có 2-3 tiến trình BE cùng một DB -> cả ba đều
+   * đọc `last_slot_at` cũ, đều thấy khung "chưa xử lý" và cùng chạy một quy tắc
+   * (automation_run_logs: 3 dòng cùng slot_at, cách nhau vài giây). Ghi
+   * `last_slot_at` bằng MỘT câu UPDATE có điều kiện thì chỉ một tiến trình đổi
+   * được dòng, hai tiến trình còn lại nhận count=0 và im lặng bỏ lượt.
+   *
+   * Đổi lại: lượt lỗi giữa chừng KHÔNG chạy lại khung đó nữa (trước đây cron
+   * lặp lại mỗi phút suốt 10 phút grace, mỗi lần lại sản xuất thêm video).
+   */
+  private async claimSlot(rule: any, now: Date): Promise<Date | null> {
+    const slot = this.dueSlot(rule, now);
+    if (!slot) return null;
+    const { count } = await this.prisma.automation_rules.updateMany({
+      where: {
+        id: rule.id,
+        OR: [{ last_slot_at: null }, { last_slot_at: { lt: slot } }],
+      },
+      data: { last_slot_at: slot, last_run_at: now },
+    });
+    if (count !== 1) {
+      this.logger.debug?.(
+        `Quy tắc "${rule.name}": khung ${slot.toISOString()} đã có nơi khác nhận.`,
+      );
+      return null;
+    }
+    rule.last_slot_at = slot; // giữ bản ghi trong RAM khớp DB
+    return slot;
   }
 
   /** Mốc UTC của [00:00 hôm nay VN, 00:00 ngày mai VN) — cửa sổ "hôm nay" giờ VN. */
@@ -144,7 +180,7 @@ export class AutomationService {
 
   private async runProduceRule(rule: any): Promise<void> {
     const now = new Date();
-    const slot = this.dueSlot(rule, now);
+    const slot = await this.claimSlot(rule, now);
     if (!slot) return;
 
     // Trần kho: đếm thành phẩm CHƯA đăng trong đúng phạm vi của quy tắc này.
@@ -220,19 +256,16 @@ export class AutomationService {
     );
     if (!res.data?.ok) throw new Error(res.data?.error || 'AI produce thất bại');
 
-    return this.prisma.processed_videos.create({
-      data: {
-        owner_id: rule.owner_id,
-        source_video_id: sv.id,
-        final_path: res.data.final_path,
-        final_drive_id: res.data.final_drive_id,
-        target_lang: res.data.target_lang,
-        voice_id: res.data.voice_id,
-        has_subtitle: res.data.has_subtitle,
-        ai_caption: res.data.ai_caption ?? null,
-        status: 'done',
-        produced_at: new Date(),
-      },
+    // upsert: sản xuất lại cùng video thì CẬP NHẬT dòng cũ, không đẻ bản trùng.
+    return upsertProcessed(this.prisma, {
+      owner_id: rule.owner_id,
+      source_video_id: sv.id,
+      final_path: res.data.final_path,
+      final_drive_id: res.data.final_drive_id,
+      target_lang: res.data.target_lang,
+      voice_id: res.data.voice_id,
+      has_subtitle: res.data.has_subtitle,
+      ai_caption: res.data.ai_caption ?? null,
     });
   }
 
@@ -270,7 +303,7 @@ export class AutomationService {
 
   private async runPostRule(rule: any): Promise<void> {
     const now = new Date();
-    const slot = this.dueSlot(rule, now);
+    const slot = await this.claimSlot(rule, now);
     if (!slot) return;
 
     const raw = rule.post_source === 'raw';
@@ -319,8 +352,7 @@ export class AutomationService {
         ranOut = true;
         break; // hết video, các page sau cũng vậy
       }
-      await this.queuePost(rule, item, page, slot);
-      queued++;
+      if (await this.queuePost(rule, item, page, slot)) queued++;
     }
     if (queued) {
       this.logger.log(`Quy tắc "${rule.name}": đặt ${queued} lịch đăng lúc ${slot.toISOString()}.`);
@@ -347,7 +379,7 @@ export class AutomationService {
     item: { pv?: any; sv?: any },
     page: any,
     slot: Date,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const pv = item.pv ?? null;
     // Đăng video gốc thì đã có sẵn bản ghi nguồn; đăng thành phẩm thì tra ngược
     // về video nguồn để lấy mô tả gốc làm caption.
@@ -391,12 +423,15 @@ export class AutomationService {
           affiliate_id: rule.affiliate_id || null,
         },
       });
+      return true;
     } catch (e: any) {
       if (e?.code === 'P2002' || e?.message?.includes('Unique constraint failed')) {
+        // Tiến trình BE khác đã đặt đúng lịch này -> KHÔNG tính là mình đặt,
+        // nếu không nhật ký báo "Đặt 1 lịch đăng" ở cả ba tiến trình.
         this.logger.warn(
           `Lịch đăng cho page "${page.page_name || page.id}" lúc ${slot.toISOString()} đã được tạo trước đó.`,
         );
-        return;
+        return false;
       }
       throw e;
     }
@@ -412,7 +447,7 @@ export class AutomationService {
    */
   private async runReupRule(rule: any): Promise<void> {
     const now = new Date();
-    const slot = this.dueSlot(rule, now);
+    const slot = await this.claimSlot(rule, now);
     if (!slot) return;
 
     const pages = await this.prisma.pages.findMany({
@@ -452,8 +487,7 @@ export class AutomationService {
         where: { rule_id: rule.id, page_id: page.id, publish_at: slot },
       });
       if (exists) continue;
-      await this.queuePost(rule, { pv }, page, slot);
-      queued++;
+      if (await this.queuePost(rule, { pv }, page, slot)) queued++;
     }
     this.logger.log(
       `Quy tắc "${rule.name}" (reup): đăng "${sv.platform_video_id}" lên ${queued} page lúc ${slot.toISOString()}.`,
@@ -512,7 +546,13 @@ export class AutomationService {
         owner_id: rule.owner_id,
         final_drive_id: { not: null },
         schedules: { none: {} },
-        ...(Object.keys(scope).length ? { source: scope } : {}),
+        source: {
+          ...scope,
+          // Chặn trùng NỘI DUNG: kho lỡ có hai bản thành phẩm của cùng một video
+          // nguồn (bản cũ trước khi có unique index) thì bản đã đăng rồi khoá
+          // luôn bản kia — người xem chỉ thấy một video, không thấy lặp lại.
+          processed: { none: { schedules: { some: {} } } },
+        },
       },
       orderBy: { produced_at: 'asc' },
     });

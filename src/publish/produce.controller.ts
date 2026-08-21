@@ -16,6 +16,7 @@ import { jobOwner } from '../auth/job-owner';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { MediaResolveService } from './media-resolve.service';
+import { upsertProcessed } from './processed-upsert';
 
 const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
 
@@ -242,17 +243,30 @@ export class ProduceController {
       throw new NotFoundException('Không tìm thấy source video hợp lệ');
     }
     const overrides = body.overrides || {};
-    const items = svs.map((sv) => {
-      const ov = pickOverride(overrides[sv.id]);
-      return {
-        source_id: sv.id,
-        video_id: sv.platform_video_id,
-        drive_id: sv.drive_id,
-        desc: sv.descr,
-        // AI áp chồng lên config chung cho RIÊNG video này (bỏ hẳn khi rỗng).
-        ...(ov ? { config: ov } : {}),
-      };
+    const items = svs
+      .filter((sv) => sv.status !== 'processing' && sv.status !== 'queued')
+      .map((sv) => {
+        const ov = pickOverride(overrides[sv.id]);
+        return {
+          source_id: sv.id,
+          video_id: sv.platform_video_id,
+          drive_id: sv.drive_id,
+          desc: sv.descr,
+          // AI áp chồng lên config chung cho RIÊNG video này (bỏ hẳn khi rỗng).
+          ...(ov ? { config: ov } : {}),
+        };
+      });
+
+    if (items.length === 0) {
+      return { ok: false, error: 'Các video chọn đều đang được xử lý.' };
+    }
+
+    // Đánh dấu đang xử lý
+    await this.prisma.source_videos.updateMany({
+      where: { id: { in: items.map((it) => it.source_id) } },
+      data: { status: 'processing' },
     });
+
     const config = await this.resolveMediaConfig(body.config ?? {}, req.user.id);
     try {
       const res = await axios.post(
@@ -270,10 +284,18 @@ export class ProduceController {
         { timeout: 1000 * 120 },
       );
       if (!res.data?.ok) {
+        await this.prisma.source_videos.updateMany({
+          where: { id: { in: items.map((it) => it.source_id) } },
+          data: { status: 'failed' },
+        });
         return { ok: false, error: res.data?.error || 'AI produce_batch thất bại' };
       }
       return { ok: true, queued: items.length };
     } catch (e: any) {
+      await this.prisma.source_videos.updateMany({
+        where: { id: { in: items.map((it) => it.source_id) } },
+        data: { status: 'failed' },
+      });
       return { ok: false, error: e.message };
     }
   }
@@ -307,6 +329,14 @@ export class ProduceController {
       where: { id, owner_id: req.user.id },
     });
     if (!sv) throw new NotFoundException('Không tìm thấy source video');
+    if (sv.status === 'processing' || sv.status === 'queued') {
+      return { ok: false, error: 'Video đang được xử lý' };
+    }
+
+    await this.prisma.source_videos.update({
+      where: { id: sv.id },
+      data: { status: 'processing' },
+    });
 
     try {
       const res = await axios.post(
@@ -319,21 +349,24 @@ export class ProduceController {
         { timeout: 1000 * 60 * 30 },
       );
       if (!res.data?.ok) {
+        await this.prisma.source_videos.update({
+          where: { id: sv.id },
+          data: { status: 'failed' },
+        });
         return { ok: false, error: res.data?.error || 'AI produce thất bại' };
       }
 
-      const pv = await this.prisma.processed_videos.create({
-        data: {
-          owner_id: sv.owner_id,
-          source_video_id: sv.id,
-          final_path: res.data.final_path,
-          final_drive_id: res.data.final_drive_id,
-          target_lang: res.data.target_lang,
-          voice_id: res.data.voice_id,
-          has_subtitle: res.data.has_subtitle,
-          status: 'done',
-          produced_at: new Date(),
-        },
+      // upsert: bấm sản xuất lại video này thì CẬP NHẬT bản cũ trong kho,
+      // không thêm bản thứ hai (kho hiện hai video y hệt -> đăng trùng).
+      const pv = await upsertProcessed(this.prisma, {
+        owner_id: sv.owner_id,
+        source_video_id: sv.id,
+        final_path: res.data.final_path,
+        final_drive_id: res.data.final_drive_id,
+        target_lang: res.data.target_lang,
+        voice_id: res.data.voice_id,
+        has_subtitle: res.data.has_subtitle,
+        ai_caption: res.data.ai_caption ?? null,
       });
       await this.prisma.source_videos.update({
         where: { id: sv.id },
@@ -341,6 +374,10 @@ export class ProduceController {
       });
       return { ok: true, processed_video: pv };
     } catch (e: any) {
+      await this.prisma.source_videos.update({
+        where: { id: sv.id },
+        data: { status: 'failed' },
+      });
       return { ok: false, error: e.message };
     }
   }

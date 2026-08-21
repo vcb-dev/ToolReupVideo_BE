@@ -28,10 +28,34 @@ export class CrawlService {
   private async crawlFromAi(
     channel: Channel,
     max: number,
-  ): Promise<{ rows: any[]; meta: any }> {
+  ): Promise<{ rows: any[]; meta: any; knownSkipped: number }> {
+    // Báo AI biết video nào ĐÃ CÓ để nó khỏi tải lại. Không có danh sách này
+    // thì AI tải đủ `max` video rồi ta mới vứt bản trùng ở createMany bên dưới
+    // — kênh đã cào rồi mà cào lại là tải lại từ đầu, phí cả băng thông lẫn thời
+    // gian. Chỉ lấy đúng cột id nên truy vấn rất nhẹ.
+    // `drive_id: not null` là CỐ Ý: chỉ coi là "đã có" khi thật sự CÓ FILE trong
+    // kho. Dòng DB mà thiếu file (nhập tay, upload hỏng giữa chừng) phải được
+    // tải lại, không thì nó kẹt vĩnh viễn ở trạng thái không xem được.
+    // Xoá video khỏi kho -> proxy.deleteVideo xoá luôn dòng này -> lần cào sau
+    // video đó hiện lại như mới. Đúng hành vi người dùng mong đợi.
+    const owned = await this.prisma.source_videos.findMany({
+      where: {
+        owner_id: channel.owner_id,
+        platform: channel.platform as any,
+        drive_id: { not: null },
+      },
+      select: { platform_video_id: true },
+    });
+    const knownIds = owned.map((r) => r.platform_video_id);
+
     const res = await axios.post(
       `${AI_URL}/api/crawl`,
-      { platform: channel.platform, user: channel.channel_ref, max },
+      {
+        platform: channel.platform,
+        user: channel.channel_ref,
+        max,
+        known_ids: knownIds,
+      },
       { timeout: 1000 * 60 * 30 },
     );
     if (!res.data?.ok) {
@@ -50,7 +74,11 @@ export class CrawlService {
       channel_id: channel.id,
       status: 'new',
     }));
-    return { rows, meta: res.data.channel || {} };
+    return {
+      rows,
+      meta: res.data.channel || {},
+      knownSkipped: Number(res.data.known_skipped || 0),
+    };
   }
 
   /** Chỉ giữ các khoá meta có giá trị -> không ghi đè dữ liệu cũ bằng rỗng/0. */
@@ -73,7 +101,7 @@ export class CrawlService {
     channel: Channel,
     max = DEFAULT_MAX,
   ): Promise<{ inserted: number; crawled: number; duplicates: number }> {
-    const { rows, meta } = await this.crawlFromAi(channel, max);
+    const { rows, meta, knownSkipped } = await this.crawlFromAi(channel, max);
     const res = rows.length
       ? await this.prisma.source_videos.createMany({
           data: rows,
@@ -87,10 +115,13 @@ export class CrawlService {
     // Trả CẢ BA số, đừng chỉ trả `inserted`. `skipDuplicates` âm thầm bỏ video
     // đã có trong thư viện, nên xin 200 mà báo 124 thì người dùng không thể biết
     // là kênh chỉ có 124, hay cào đủ 200 nhưng 76 cái đã có sẵn.
+    // `rows` giờ CHỈ còn video mới (AI đã lọc bỏ cái đã có trước khi tải), nên
+    // phải cộng lại knownSkipped mới ra đúng "kênh trả về bao nhiêu".
+    const crawled = rows.length + knownSkipped;
     return {
       inserted: res.count,
-      crawled: rows.length,
-      duplicates: rows.length - res.count,
+      crawled,
+      duplicates: crawled - res.count,
     };
   }
 

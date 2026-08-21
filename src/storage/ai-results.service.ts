@@ -1,7 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import axios from 'axios';
+import { CRON_ENABLED } from '../cron-guard';
 import { PrismaService } from '../prisma/prisma.service';
+import { upsertProcessed } from '../publish/processed-upsert';
 
 const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
 /** Nhịp lấy kết quả từ AI. Đủ nhanh để UI thấy gần như tức thì, đủ thưa để không spam. */
@@ -29,7 +31,7 @@ export class AiResultsService {
 
   @Interval('drain-ai-results', DRAIN_MS)
   async drain(): Promise<void> {
-    if (this.draining || !this.prisma.enabled) return;
+    if (!CRON_ENABLED || this.draining || !this.prisma.enabled) return;
     this.draining = true;
     try {
       const { data } = await axios.get(`${AI_URL}/api/pending`, {
@@ -105,9 +107,11 @@ export class AiResultsService {
   /**
    * Ghi video đã sản xuất vào processed_videos + đặt source status=done.
    *
-   * Bảng này KHÔNG có ràng buộc unique, nên tự chống trùng bằng cặp
-   * (source_video_id, final_drive_id): cùng một file thành phẩm thì không ghi
-   * hai lần. Sản xuất lại thật sự sẽ có final_drive_id khác nên vẫn ghi bình thường.
+   * Chống trùng bằng khoá (source_video_id, file đầu ra) — nay có unique index
+   * thật ở DB (migration 0024) và `upsertProcessed` cập nhật dòng cũ thay vì
+   * chèn thêm. Cần vậy vì NHIỀU tiến trình BE cùng poll AI /api/pending: bản cũ
+   * "tìm trước, chèn sau" để lọt hai dòng y hệt nhau khi hai tiến trình chạy
+   * song song (đo được 2026-08-21, created_at trùng tới mili giây).
    */
   async saveProcessedVideos(ownerId: string, items: any[]): Promise<number> {
     if (!ownerId || !items?.length) return 0;
@@ -120,27 +124,15 @@ export class AiResultsService {
       });
       if (!sv) continue;
 
-      const dup = await this.prisma.processed_videos.findFirst({
-        where: {
-          source_video_id: sv.id,
-          final_drive_id: it.final_drive_id ?? null,
-        },
-      });
-      if (dup) continue; // đã ghi ở lượt drain trước (ack lỗi) -> bỏ qua
-
-      await this.prisma.processed_videos.create({
-        data: {
-          owner_id: ownerId,
-          source_video_id: sv.id,
-          final_path: it.final_path ?? null,
-          final_drive_id: it.final_drive_id ?? null,
-          target_lang: it.target_lang ?? 'vi',
-          voice_id: it.voice_id ?? null,
-          has_subtitle: !!it.has_subtitle,
-          ai_caption: it.ai_caption ?? null,
-          status: 'done',
-          produced_at: new Date(),
-        },
+      await upsertProcessed(this.prisma, {
+        owner_id: ownerId,
+        source_video_id: sv.id,
+        final_path: it.final_path ?? null,
+        final_drive_id: it.final_drive_id ?? null,
+        target_lang: it.target_lang ?? 'vi',
+        voice_id: it.voice_id ?? null,
+        has_subtitle: !!it.has_subtitle,
+        ai_caption: it.ai_caption ?? null,
       });
       await this.prisma.source_videos.update({
         where: { id: sv.id },
