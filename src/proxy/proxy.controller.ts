@@ -91,6 +91,15 @@ export class ProxyController {
     return this.proxyService.deleteVideo(body.aweme_id, req.user.id);
   }
 
+  // Dọn file GỐC của video đã sản xuất xong (giữ nguyên thành phẩm) — bấm tay,
+  // không tự động. Xem ProxyService.cleanupOriginals để rõ điều kiện an toàn.
+  @Post('videos/cleanup-originals')
+  @HttpCode(HttpStatus.OK)
+  async cleanupOriginals(@Req() req: any) {
+    await this.deletePin.assertDeleteAllowed(req.user, req.headers['x-delete-pin']);
+    return this.proxyService.cleanupOriginals(req.user.id);
+  }
+
   @Post('process')
   @HttpCode(HttpStatus.OK)
   async process(

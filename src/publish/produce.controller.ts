@@ -309,10 +309,15 @@ export class ProduceController {
   @HttpCode(HttpStatus.OK)
   async cancel(@Req() req: any) {
     try {
+      // Giải phóng các video bị kẹt trạng thái processing trong DB
+      await this.prisma.source_videos.updateMany({
+        where: { owner_id: req.user.id, status: 'processing' },
+        data: { status: 'failed' },
+      });
       // Chỉ huỷ job CỦA CHÍNH MÌNH — không đụng vào việc người khác đang chạy.
       const res = await axios.post(
         `${AI_URL}/api/cancel`,
-        { owner_id: req.user.id },
+        { owner_id: req.user.id, force: true },
         { timeout: 1000 * 15 },
       );
       return { ok: res.data?.ok !== false, note: res.data?.note };

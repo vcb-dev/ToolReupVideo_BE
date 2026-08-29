@@ -154,14 +154,16 @@ export class ProxyService {
     // manifest AI), nên phải truyền drive_id để AI dọn đúng file storage.
     let driveId: string | null = null;
     let isUpload = false;
+    let sourceRowId: string | null = null;
     if (this.prisma.enabled) {
       try {
         const sv = await this.prisma.source_videos.findFirst({
           where: { owner_id: ownerId, platform_video_id: awemeId },
-          select: { drive_id: true, platform: true },
+          select: { id: true, drive_id: true, platform: true },
         });
         driveId = sv?.drive_id ?? null;
         isUpload = sv?.platform === 'upload';
+        sourceRowId = sv?.id ?? null;
       } catch (error) {
         this.logger.warn(`Tra drive_id lỗi (bỏ qua): ${error.message}`);
       }
@@ -174,6 +176,32 @@ export class ProxyService {
         .remove(StorageService.coverKeyFor(driveId))
         .catch(() => undefined);
     }
+
+    // Xoá source_videos CASCADE xoá luôn dòng processed_videos trong DB, nhưng
+    // KHÔNG đụng tới file thành phẩm trên kho -> file mồ côi nằm lại vĩnh viễn
+    // (chính là 70 file rác đo được 2026-08-24, tồn từ 7/8). Phải tự dọn ở đây.
+    if (this.prisma.enabled && sourceRowId) {
+      try {
+        const pvs = await this.prisma.processed_videos.findMany({
+          where: { source_video_id: sourceRowId },
+          select: { final_drive_id: true },
+        });
+        for (const pv of pvs) {
+          if (pv.final_drive_id) {
+            await this.storage.remove(pv.final_drive_id).catch(() => undefined);
+          }
+        }
+      } catch (error) {
+        this.logger.warn(`Dọn file thành phẩm lỗi (bỏ qua): ${error.message}`);
+      }
+    }
+    // File GỐC: tự dọn ở BE (qua thùng rác) TRƯỚC khi gọi AI, thay vì để AI
+    // unlink cứng — AI vẫn được gọi bên dưới để dọn khỏi manifest.json của nó,
+    // lúc đó file đã dời đi rồi nên AI unlink hụt (best-effort, vô hại).
+    if (driveId) {
+      await this.storage.remove(driveId).catch(() => undefined);
+    }
+
     let aiOk = false;
     try {
       const res = await axios.post(
@@ -199,6 +227,57 @@ export class ProxyService {
       }
     }
     return { ok: true, aiOk, deletedRows };
+  }
+
+  /**
+   * Dọn file GỐC của những video ĐÃ sản xuất xong (còn thành phẩm) — video đã
+   * lồng tiếng thì không cần giữ bản gốc nữa, phần lớn dung lượng kho nằm ở
+   * đây (đo 2026-08-24: gần 30GB kho, video gốc riêng ~13GB).
+   *
+   * Bấm THỦ CÔNG (không cron) — sản xuất lại 1 video sau khi dọn gốc sẽ phải
+   * cào lại từ nguồn (TikHub), người dùng cần chủ động biết đánh đổi này.
+   *
+   * Loại trừ platform='upload': đó là clip TỰ QUAY của người dùng, gốc là
+   * bản DUY NHẤT — mất là mất hẳn, không cào lại được như video cào từ kênh.
+   */
+  async cleanupOriginals(ownerId: string) {
+    if (!this.prisma.enabled) return { ok: false, error: 'DB chưa bật.' };
+
+    const candidates = await this.prisma.source_videos.findMany({
+      where: {
+        owner_id: ownerId,
+        status: 'done',
+        platform: { not: 'upload' },
+        drive_id: { not: null },
+      },
+      select: { id: true, drive_id: true },
+    });
+
+    let cleaned = 0;
+    const failed: string[] = [];
+    for (const sv of candidates) {
+      // Chỉ dọn gốc khi CHẮC CHẮN còn thành phẩm dùng được — video status=done
+      // nhưng lỡ mất luôn processed_videos (như sự cố hôm nay) thì gốc là thứ
+      // duy nhất còn lại, dọn nhầm là mất trắng.
+      const hasProcessed = await this.prisma.processed_videos.findFirst({
+        where: { source_video_id: sv.id, final_drive_id: { not: null } },
+        select: { id: true },
+      });
+      if (!hasProcessed) continue;
+
+      try {
+        await this.storage.remove(sv.drive_id as string);
+        await this.prisma.source_videos.update({
+          where: { id: sv.id },
+          data: { drive_id: null },
+        });
+        cleaned++;
+      } catch (error: any) {
+        failed.push(sv.drive_id as string);
+        this.logger.warn(`Dọn gốc ${sv.drive_id} lỗi: ${error?.message}`);
+      }
+    }
+    return { ok: true, cleaned, skipped: candidates.length - cleaned - failed.length, failed: failed.length };
   }
 
   async select(aweme_id: string, selected: boolean) {

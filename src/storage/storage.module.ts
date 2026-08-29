@@ -7,6 +7,7 @@ import { MediaController } from './media.controller';
 import { LocalFilesController } from './local-files.controller';
 import { SourceUploadController } from './source-upload.controller';
 import { UploadSweeperService } from './upload-sweeper.service';
+import { TrashSweeperService } from './trash-sweeper.service';
 import { AuthModule } from '../auth/auth.module';
 
 @Module({
@@ -20,7 +21,7 @@ import { AuthModule } from '../auth/auth.module';
     LocalFilesController, // /files/* — chỉ có tác dụng khi STORAGE_PROVIDER=local
     SourceUploadController, // người dùng tự tải video lên Kho
   ],
-  providers: [StorageService, AiResultsService, UploadSweeperService],
+  providers: [StorageService, AiResultsService, UploadSweeperService, TrashSweeperService],
   exports: [StorageService],
 })
 export class StorageModule {}

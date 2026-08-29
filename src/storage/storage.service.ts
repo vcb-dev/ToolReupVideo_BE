@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import axios from 'axios';
 import { createHmac, timingSafeEqual } from 'crypto';
-import { mkdir, stat, unlink, writeFile } from 'fs/promises';
+import { mkdir, rename, stat, writeFile } from 'fs/promises';
 import { dirname, join, resolve, sep } from 'path';
 
 /** Thao tác mà một link ký sẵn cho phép — đọc và ghi KHÔNG dùng chung chữ ký. */
@@ -227,10 +227,35 @@ export class StorageService {
     }
   }
 
+  /**
+   * Thư mục thùng rác local — nằm CẠNH storage/videos (không lồng vào trong,
+   * đỡ lẫn với các script quét file thật). Xếp theo ngày để dọn tay/tự động
+   * theo lô, và để người dùng biết chắc "xoá hôm nào" khi tìm lại backup.
+   */
+  private trashPath(key: string): string {
+    const day = new Date().toISOString().slice(0, 10); // YYYY-MM-DD, giờ máy chủ
+    const root = resolve(this.localDir, '..', '.trash', day);
+    return join(root, key);
+  }
+
+  /**
+   * Xoá 1 file khỏi kho. Local: KHÔNG unlink thật — chuyển vào thùng rác
+   * `storage/.trash/<ngày>/<key>` để lỡ tay xoá vẫn tự tay lấy lại/backup
+   * được (xem TrashSweeperService dọn rác quá hạn). Sự cố 2026-08-24 (một
+   * vòng xoá hàng loạt mất luôn dữ liệu, không cách nào cứu) là lý do đổi
+   * sang cơ chế này thay vì xoá cứng ngay lập tức.
+   */
   async remove(key: string): Promise<void> {
     if (this.provider === 'local') {
-      // Xoá tay rồi thì coi như xong (giống best-effort của các provider khác).
-      await unlink(this.localPath(key)).catch(() => undefined);
+      const src = this.localPath(key);
+      const dst = this.trashPath(key);
+      try {
+        await mkdir(dirname(dst), { recursive: true });
+        await rename(src, dst);
+      } catch {
+        // File không tồn tại (đã xoá tay từ trước) hoặc lỗi khác -> best-effort,
+        // giống hành vi cũ, đừng để 1 file lỗi làm hỏng cả thao tác xoá.
+      }
       return;
     }
     this.ensureSupabase();
