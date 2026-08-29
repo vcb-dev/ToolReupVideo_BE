@@ -72,11 +72,17 @@ export class ScheduleService {
       try {
         await this.postOne(s);
       } catch (e: any) {
-        this.logger.error(`Lịch ${s.id} lỗi: ${e.message}`);
+        // AI trả lỗi thật trong body JSON (vd. nguyên văn lỗi Facebook Graph),
+        // nhưng axios coi status >= 400 là exception -> e.message chỉ còn
+        // "Request failed with status code 500", mất sạch lý do thật. Đo được
+        // 2026-08-27/28: 49 lịch đăng lỗi, TẤT CẢ đều chỉ ghi mỗi câu chung
+        // chung đó, không tra được vì sao (hết hạn token? sai định dạng video?).
+        const msg = e.response?.data?.error || e.message;
+        this.logger.error(`Lịch ${s.id} lỗi: ${msg}`);
         await this.prisma.schedules
           .update({
             where: { id: s.id },
-            data: { status: 'failed', error: e.message },
+            data: { status: 'failed', error: String(msg).slice(0, 1000) },
           })
           .catch(() => undefined);
       }
