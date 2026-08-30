@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import type { schedule_status } from '@prisma/client';
 import axios from 'axios';
 import { CRON_ENABLED } from '../cron-guard';
 import { PrismaService } from '../prisma/prisma.service';
@@ -534,28 +535,67 @@ export class AutomationService {
     return `Không còn video mới (đăng trong ${days} ngày) chưa reup${scope}.`;
   }
 
+  /** Lịch coi như "đã xử lý xong" (chặn chọn lại) — pending/publishing đang
+   *  chờ tới lượt, posted đã lên bài. Cố tình KHÔNG tính 'failed': trước đây
+   *  1 lượt lỗi là khoá vĩnh viễn processed_video đó khỏi mọi lượt sau, dù lỗi
+   *  chỉ thoáng qua (đo 2026-08-27/28: AI trả lỗi thật nhưng BE chỉ log "Request
+   *  failed with status code 500", video dài bị Facebook Reels từ chối — cả 2
+   *  đã fix, video cũ vẫn kẹt vì không có đường quay lại pool). */
+  private readonly HANDLED_SCHEDULE_STATUS: schedule_status[] = [
+    'pending',
+    'publishing',
+    'posted',
+  ];
+  /** Bỏ hẳn nếu fail từ ngần này lần trở lên — để lỗi thoáng qua vẫn được thử
+   *  lại mà file thật sự hỏng thì không lặp vô hạn, chiếm mất lượt của video
+   *  khác trong cùng chủ đề. */
+  private readonly MAX_RETRY_ATTEMPTS = 3;
+
   /**
-   * Thành phẩm sẵn sàng đăng: có file, CHƯA từng lên lịch lần nào (tránh đăng
-   * trùng, kể cả khi chạy nhiều page trong cùng một lượt), lọc theo chủ đề của
-   * video nguồn, cũ nhất trước.
+   * Thành phẩm sẵn sàng đăng: có file, chưa đăng thành công/chưa có lịch đang
+   * chờ (xem HANDLED_SCHEDULE_STATUS), lọc theo chủ đề của video nguồn, cũ
+   * nhất trước.
    */
   private async pickReadyVideo(rule: any) {
     const scope = this.sourceScope(rule);
-    return this.prisma.processed_videos.findFirst({
+    const candidates = await this.prisma.processed_videos.findMany({
       where: {
         owner_id: rule.owner_id,
         final_drive_id: { not: null },
-        schedules: { none: {} },
+        schedules: { none: { status: { in: this.HANDLED_SCHEDULE_STATUS } } },
         source: {
           ...scope,
           // Chặn trùng NỘI DUNG: kho lỡ có hai bản thành phẩm của cùng một video
           // nguồn (bản cũ trước khi có unique index) thì bản đã đăng rồi khoá
           // luôn bản kia — người xem chỉ thấy một video, không thấy lặp lại.
-          processed: { none: { schedules: { some: {} } } },
+          processed: {
+            none: { schedules: { some: { status: { in: this.HANDLED_SCHEDULE_STATUS } } } },
+          },
         },
       },
+      include: { schedules: { select: { status: true } } },
       orderBy: { produced_at: 'asc' },
     });
+    const eligible = candidates.filter(
+      (pv) =>
+        pv.schedules.filter((s) => s.status === 'failed').length <
+        this.MAX_RETRY_ATTEMPTS,
+    );
+    // pick_mode='videos': người dùng tự tick chọn TỪNG video cụ thể — mỗi lần
+    // tick FE nối id vào CUỐI mảng source_video_ids (xem toggleIn trong
+    // Automation.tsx), nên chính thứ tự tick đó là thứ tự đăng mong muốn.
+    // Không có yêu cầu này thì mặc định vẫn là "sản xuất trước, đăng trước".
+    if (rule.pick_mode === 'videos' && rule.source_video_ids?.length) {
+      const order = new Map<string, number>(
+        (rule.source_video_ids as string[]).map((id, i) => [id, i]),
+      );
+      eligible.sort(
+        (a, b) =>
+          (order.get(a.source_video_id) ?? Infinity) -
+          (order.get(b.source_video_id) ?? Infinity),
+      );
+    }
+    return eligible[0] ?? null;
   }
 
   /**
@@ -567,7 +607,7 @@ export class AutomationService {
    */
   private async pickReadyRawVideo(rule: any) {
     const scope = this.sourceScope(rule);
-    return this.prisma.source_videos.findFirst({
+    const candidates = await this.prisma.source_videos.findMany({
       where: {
         owner_id: rule.owner_id,
         drive_id: { not: null },
@@ -576,6 +616,16 @@ export class AutomationService {
       },
       orderBy: { crawled_at: 'asc' },
     });
+    // Cùng quy tắc ưu tiên thứ tự tick chọn như pickReadyVideo() — xem đó.
+    if (rule.pick_mode === 'videos' && rule.source_video_ids?.length) {
+      const order = new Map<string, number>(
+        (rule.source_video_ids as string[]).map((id, i) => [id, i]),
+      );
+      candidates.sort(
+        (a, b) => (order.get(a.id) ?? Infinity) - (order.get(b.id) ?? Infinity),
+      );
+    }
+    return candidates[0] ?? null;
   }
 
   /**

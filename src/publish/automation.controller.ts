@@ -80,7 +80,25 @@ export class AutomationController {
     const owner_id = req.user.id;
     const base = { owner_id, drive_id: { not: null } };
     const [all, unproduced, unscheduled] = await Promise.all([
-      this.prisma.source_videos.findMany({ where: base, select: { topic: true } }),
+      // Tên chủ đề hiện trong dropdown: video còn GỐC (drive_id) HOẶC còn
+      // THÀNH PHẨM (processed_videos.final_drive_id) đều tính là "có video".
+      // Trước đây chỉ xét drive_id -> chủ đề đã dọn sạch gốc (tính năng "Dọn
+      // bản gốc" 2026-08-28, cố tình xoá drive_id khi đã có thành phẩm) biến
+      // mất khỏi dropdown dù Kho vẫn còn nguyên video, lệch với danh sách
+      // thư mục thật trong Kho (đo được 2026-08-29: "Mẹo hay mỗi ngày 24/8",
+      // 50/50 video đã dọn gốc, rớt khỏi dropdown).
+      this.prisma.source_videos.findMany({
+        where: {
+          owner_id,
+          OR: [
+            { drive_id: { not: null } },
+            { processed: { some: { final_drive_id: { not: null } } } },
+          ],
+        },
+        select: { topic: true },
+      }),
+      // available/available_raw bên dưới vẫn chỉ tính trên GỐC — đúng ý nghĩa
+      // gốc: "còn bao nhiêu video nguồn để sản xuất/đăng thẳng", không đổi.
       this.prisma.source_videos.findMany({
         where: { ...base, processed: { none: {} } },
         select: { topic: true },
