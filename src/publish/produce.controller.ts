@@ -117,14 +117,21 @@ export class ProduceController {
    * owner_id sang AI /api/produce_batch rồi trả ngay. Tiến độ xem qua /api/state.
    */
   /**
-   * ĐĂNG mẻ video ĐÃ SẢN XUẤT (không produce lại), resolve page/affiliate rồi
-   * forward AI /api/post_batch. Hai cách chỉ định video:
+   * ĐĂNG mẻ video ĐÃ SẢN XUẤT (không produce lại). Hai cách chỉ định video:
    *   - `processed_video_ids`: đăng ĐÚNG bản thành phẩm đã chọn (Kho).
    *   - `source_video_ids`: mỗi source lấy bản thành phẩm mới nhất (Xưởng).
    *
    * `captions`: caption user tự sửa cho TỪNG video, key theo processed_video_id
    * HOẶC source_video_id (nhận cả hai để Kho và Xưởng dùng chung). Thiếu key ->
-   * giữ mô tả gốc. AI vẫn nối hashtag + affiliate vào sau caption này.
+   * giữ mô tả gốc.
+   *
+   * TẠO DÒNG `schedules` (publish_at = ngay bây giờ) thay vì gọi thẳng AI
+   * /api/post_batch (job nền, fire-and-forget) như trước — ScheduleService
+   * (cron mỗi phút, đã chạy sẵn cho lịch tự động) sẽ nhặt và đăng qua /api/post
+   * ĐỒNG BỘ, lỗi thật ghi vào schedules.error, hiện trong tab "Lịch đăng".
+   * Trước đây lỗi (Facebook từ chối, mất mạng...) chỉ log thoáng qua trong
+   * panel job đang chạy — không đứng nhìn đúng lúc là mất dấu vĩnh viễn, tưởng
+   * đã đăng thành công vì thanh tiến độ vẫn báo xong (đo được 2026-08-30).
    */
   @Post('publish')
   @HttpCode(HttpStatus.OK)
@@ -143,6 +150,17 @@ export class ProduceController {
     const srcIds = body.source_video_ids || [];
     if (pvIds.length === 0 && srcIds.length === 0) {
       throw new BadRequestException('Chưa chọn video nào.');
+    }
+
+    const pageIds: string[] = body.config?.post_page_ids || [];
+    if (pageIds.length === 0) {
+      return { ok: false, error: 'Chưa chọn trang đích.' };
+    }
+    const pages = await this.prisma.pages.findMany({
+      where: { id: { in: pageIds }, owner_id: req.user.id, is_active: true },
+    });
+    if (pages.length === 0) {
+      return { ok: false, error: 'Không tìm thấy trang đích hợp lệ (có thể đã bị tắt).' };
     }
 
     const pvs = await this.prisma.processed_videos.findMany({
@@ -165,54 +183,44 @@ export class ProduceController {
     });
     const descById = new Map(sources.map((s) => [s.id, s.descr || '']));
 
+    const hashtags = (body.config?.hashtags || '').trim();
+    const affiliateId: string | null = body.config?.affiliate_id || null;
+
     // Chọn theo source thì mỗi source chỉ lấy bản mới nhất; chọn thẳng thành
     // phẩm thì đăng đúng những bản đó (user đã xem và quyết định).
     const seen = new Set<string>();
     const caps = body.captions || {};
-    const items: any[] = [];
+    let queued = 0;
     for (const pv of pvs) {
       if (!pvIds.length) {
         if (seen.has(pv.source_video_id)) continue;
         seen.add(pv.source_video_id);
       }
       // Caption user sửa (key theo thành phẩm hoặc theo source) > mô tả gốc.
-      // Dùng `??` chứ không `||`: giữ nguyên chuỗi user gõ, kể cả rỗng (AI sẽ
-      // tự rơi về upload.caption mặc định nếu rỗng).
+      // Dùng `??` chứ không `||`: giữ nguyên chuỗi user gõ, kể cả rỗng.
       const edited = caps[pv.id] ?? caps[pv.source_video_id];
-      items.push({
-        final_drive_id: pv.final_drive_id,
-        final_path: pv.final_path,
-        desc: edited ?? pv.ai_caption ?? descById.get(pv.source_video_id) ?? '',
-      });
+      const baseDesc = edited ?? pv.ai_caption ?? descById.get(pv.source_video_id) ?? '';
+      const caption = [baseDesc, hashtags].filter(Boolean).join('\n');
+
+      for (const page of pages) {
+        await this.prisma.schedules.create({
+          data: {
+            owner_id: req.user.id,
+            processed_video_id: pv.id,
+            page_id: page.id,
+            caption,
+            publish_at: new Date(),
+            status: 'pending',
+            affiliate_id: affiliateId,
+          },
+        });
+        queued++;
+      }
     }
-    if (items.length === 0) {
+    if (queued === 0) {
       return { ok: false, error: 'Chưa có video thành phẩm để đăng (hãy xử lý trước).' };
     }
-
-    const config = await this.resolveMediaConfig(body.config ?? {}, req.user.id);
-    try {
-      const res = await axios.post(
-        `${AI_URL}/api/post_batch`,
-        {
-          owner_id: req.user.id,
-          // Khoá hàng đợi theo NGƯỜI THẬT. owner_id có thể là id kho dùng chung
-          // (giống nhau ở mọi tài khoản) -> lấy nó thì hai người chặn nhau.
-          job_owner: jobOwner(req),
-          items,
-          post_targets: config.post_targets || [],
-          platforms: body.platforms ?? [],
-          hashtags: config.hashtags || '',
-          affiliate_url: config.affiliate_url || '',
-        },
-        { timeout: 1000 * 120 },
-      );
-      if (!res.data?.ok) {
-        return { ok: false, error: res.data?.error || 'AI post_batch thất bại' };
-      }
-      return { ok: true, queued: items.length };
-    } catch (e: any) {
-      return { ok: false, error: e.message };
-    }
+    return { ok: true, queued };
   }
 
   @Post('batch')
