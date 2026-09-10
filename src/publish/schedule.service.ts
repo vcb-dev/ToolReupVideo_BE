@@ -72,12 +72,7 @@ export class ScheduleService {
       try {
         await this.postOne(s);
       } catch (e: any) {
-        // AI trả lỗi thật trong body JSON (vd. nguyên văn lỗi Facebook Graph),
-        // nhưng axios coi status >= 400 là exception -> e.message chỉ còn
-        // "Request failed with status code 500", mất sạch lý do thật. Đo được
-        // 2026-08-27/28: 49 lịch đăng lỗi, TẤT CẢ đều chỉ ghi mỗi câu chung
-        // chung đó, không tra được vì sao (hết hạn token? sai định dạng video?).
-        const msg = e.response?.data?.error || e.message;
+        const msg = this.explain(e);
         this.logger.error(`Lịch ${s.id} lỗi: ${msg}`);
         await this.prisma.schedules
           .update({
@@ -87,6 +82,37 @@ export class ScheduleService {
           .catch(() => undefined);
       }
     }
+  }
+
+  /**
+   * Lý do THẬT của một lần đăng hỏng, để ghi vào `schedules.error`.
+   *
+   * AI trả lý do trong body JSON (vd. nguyên văn lỗi Facebook Graph), nhưng
+   * axios coi status >= 400 là exception -> `e.message` chỉ còn "Request failed
+   * with status code 500". Đo 2026-08-27/28: 49 lịch hỏng, TẤT CẢ chỉ ghi mỗi
+   * câu chung chung đó, không tra được vì sao.
+   *
+   * Lấy `data.error` thôi VẪN CHƯA ĐỦ: đo 2026-09-10, 3 lịch hỏng liên tiếp vẫn
+   * ghi đúng câu ấy — nghĩa là AI trả 500 mà body không có `error` dùng được
+   * (str(e) rỗng, hoặc trang HTML của Werkzeug khi exception thoát ra ngoài
+   * handler, lúc đó AI cũng không log được gì). Rơi vào trường hợp này thì ghi
+   * luôn status + body thô: xấu, nhưng còn tra được thay vì mất dấu lần nữa.
+   */
+  private explain(e: any): string {
+    const res = e.response;
+    if (!res) return e.message;
+    const err = res.data?.error;
+    if (typeof err === 'string' && err.trim()) return err;
+    let raw: string;
+    if (typeof res.data === 'string') raw = res.data;
+    else {
+      try {
+        raw = JSON.stringify(res.data);
+      } catch {
+        raw = String(res.data);
+      }
+    }
+    return `AI trả HTTP ${res.status} không kèm lý do — body: ${raw.slice(0, 400)}`;
   }
 
   /**

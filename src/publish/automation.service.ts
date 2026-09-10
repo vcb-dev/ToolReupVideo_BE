@@ -224,15 +224,18 @@ export class AutomationService {
   private async produceOne(rule: any, sv: any): Promise<any> {
     this.logger.log(`Quy tắc "${rule.name}": đang sản xuất ${sv.platform_video_id}...`);
     // Tự động không có người vẽ khung che -> mặc định để Gemini TỰ DÒ khung chữ
-    // gốc + ghi phụ đề Việt. Đặt trước rule.video_config nên nếu sau này UI quy
-    // tắc cho chỉnh các cờ này thì giá trị của rule vẫn thắng.
+    // gốc. Đặt trước rule.video_config nên nếu sau này UI quy tắc cho chỉnh các
+    // cờ này thì giá trị của rule vẫn thắng.
     // Khung viền + nhạc từ Kho -> URL ký sẵn (logic chung với Xưởng video).
     const config: Record<string, any> = await this.media.resolveFrameMusic(
       rule.owner_id,
       {
         cover_text: true,
         cover_detect: true,
-        subtitle_enabled: true,
+        // KHÔNG mặc định bật phụ đề ở đây. Che chữ gốc là việc bắt buộc của reup
+        // nên bật sẵn hợp lý, còn ghi phụ đề là LỰA CHỌN của người dùng: đặt
+        // cứng true khiến mọi quy tắc chưa lưu khoá này đều ra video có phụ đề
+        // dù trong UI người dùng đã tắt.
         ...(rule.video_config || {}),
       },
     );
