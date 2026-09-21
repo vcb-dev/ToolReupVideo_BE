@@ -11,6 +11,11 @@ import { dirname, join, resolve, sep } from 'path';
 /** Thao tác mà một link ký sẵn cho phép — đọc và ghi KHÔNG dùng chung chữ ký. */
 export type FileOp = 'get' | 'put';
 
+/** Link ảnh bìa nằm thẳng trong cột cover_url và được render bằng <img src>, nên phải sống lâu. */
+export const COVER_TTL_SEC = Number(
+  process.env.COVER_URL_TTL_SEC || 10 * 365 * 24 * 3600,
+);
+
 /**
  * Cấp "URL ký sẵn" (signed URL) để AI service PUT/GET file trực tiếp lên kho —
  * BE là NƠI DUY NHẤT giữ secret, AI không cần biết. Hỗ trợ 2 nhà cung cấp qua
@@ -121,6 +126,15 @@ export class StorageService {
   /** Ảnh bìa suy ra từ key video -> khỏi phải lưu thêm cột trong DB. */
   static coverKeyFor(driveId: string): string {
     return driveId.replace(/\.[^./]+$/, '') + '.jpg';
+  }
+
+  /**
+   * Link ảnh bìa để ghi thẳng vào cột cover_url (FE render bằng <img src>).
+   * Phải SỐNG LÂU: hết hạn là cả thư viện trắng ảnh. Dùng chung cho video tải
+   * tay lẫn video cào về.
+   */
+  async signCoverUrl(coverKey: string): Promise<string> {
+    return this.signDownload(coverKey, COVER_TTL_SEC, 'image/jpeg', true);
   }
 
   /**

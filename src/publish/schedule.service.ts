@@ -4,6 +4,7 @@ import axios from 'axios';
 import { CRON_ENABLED } from '../cron-guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { PostTargetService } from './post-target.service';
+import { StorageService } from '../storage/storage.service';
 
 const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
 
@@ -30,6 +31,7 @@ export class ScheduleService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly postTarget: PostTargetService,
+    private readonly storage: StorageService,
   ) {}
 
   @Cron(CronExpression.EVERY_MINUTE, { name: 'post-due-schedules' })
@@ -132,11 +134,45 @@ export class ScheduleService {
     }
   }
 
+  /**
+   * Ảnh bìa gốc để đặt thumbnail Facebook: ưu tiên file ĐÃ CÓ TRONG KHO (video
+   * cào từ 18/09/2026 trở đi), không có thì trả link CDN nền tảng cho AI tự tải
+   * (video cào trước đó chỉ lưu link). Không tìm được -> {} và vẫn đăng bình
+   * thường, Facebook tự chọn khung hình.
+   */
+  private async resolveCover(
+    sourceId: string | null,
+  ): Promise<{ cover_key?: string; cover_url?: string; platform?: string }> {
+    if (!sourceId) return {};
+    try {
+      const sv = await this.prisma.source_videos.findUnique({
+        where: { id: sourceId },
+        select: { drive_id: true, cover_url: true, platform: true },
+      });
+      if (!sv) return {};
+      if (sv.drive_id) {
+        const key = StorageService.coverKeyFor(sv.drive_id);
+        if (await this.storage.statObject(key)) {
+          return { cover_key: key, platform: sv.platform };
+        }
+      }
+      // Chỉ gửi link TUYỆT ĐỐI: cover_url của video tải tay là đường dẫn nội bộ
+      // ("/files/..."), AI không tải được bằng HTTP thường.
+      if (sv.cover_url && /^https?:\/\//.test(sv.cover_url)) {
+        return { cover_url: sv.cover_url, platform: sv.platform };
+      }
+    } catch (e: any) {
+      this.logger.warn(`Không lấy được ảnh bìa nguồn ${sourceId}: ${e.message}`);
+    }
+    return {};
+  }
+
   private async postOne(schedule: any): Promise<void> {
     // Trạng thái 'publishing' đã được claim() đặt trước khi vào đây.
     // Lịch trỏ tới thành phẩm, hoặc tới VIDEO GỐC trong kho (đăng nguyên bản).
     let driveId: string | null = null;
     let localPath: string | null = null;
+    let sourceId: string | null = schedule.source_video_id ?? null;
     if (schedule.processed_video_id) {
       const pv = await this.prisma.processed_videos.findUnique({
         where: { id: schedule.processed_video_id },
@@ -144,6 +180,7 @@ export class ScheduleService {
       if (!pv) throw new Error('Thiếu processed_video');
       driveId = pv.final_drive_id;
       localPath = pv.final_path;
+      sourceId = pv.source_video_id ?? sourceId;
     } else {
       const sv = await this.prisma.source_videos.findUnique({
         where: { id: schedule.source_video_id },
@@ -158,6 +195,8 @@ export class ScheduleService {
     const target = await this.postTarget.build(schedule.page_id, schedule.owner_id);
     if (!target) throw new Error('Thiếu page');
 
+    const cover = await this.resolveCover(sourceId);
+
     const res = await axios.post(
       `${AI_URL}/api/post`,
       {
@@ -166,6 +205,8 @@ export class ScheduleService {
         post_target: target,
         title: schedule.caption || '',
         description: schedule.caption || '',
+        // Ảnh bìa GỐC của video nguồn -> AI đặt làm thumbnail trên Facebook.
+        ...cover,
       },
       { timeout: 1000 * 60 * 30 },
     );

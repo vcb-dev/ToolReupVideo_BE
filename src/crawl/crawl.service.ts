@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
+import { StorageService } from '../storage/storage.service';
 
 const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
 // Số video tối đa lấy mỗi kênh khi cào tự động. Chỉ là mặc định, không phải
@@ -19,7 +20,10 @@ type Channel = {
 export class CrawlService {
   private readonly logger = new Logger(CrawlService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
+  ) {}
 
   /**
    * Gọi AI service cào 1 kênh -> bản ghi source_videos (gắn owner/channel) +
@@ -61,11 +65,16 @@ export class CrawlService {
     if (!res.data?.ok) {
       throw new Error(res.data?.error || 'AI service cào thất bại');
     }
-    const rows = (res.data.videos || []).map((v: any) => ({
+    const rows = await Promise.all((res.data.videos || []).map(async (v: any) => ({
       platform: v.platform,
       platform_video_id: v.platform_video_id,
       descr: v.descr,
-      cover_url: v.cover_url,
+      // AI đã tải ảnh bìa về kho -> ký link nội bộ, khỏi phụ thuộc CDN nền tảng
+      // (link CDN có chữ ký, hết hạn là trắng ảnh cả thư viện). Không tải được
+      // ảnh thì cover_key = null -> lui về link gốc như trước.
+      cover_url: v.cover_key
+        ? await this.storage.signCoverUrl(v.cover_key)
+        : v.cover_url,
       original_url: v.original_url,
       drive_id: v.drive_id,
       // Ngày đăng gốc (ISO từ AI). Null nếu nguồn không có -> reup không xét.
@@ -73,7 +82,7 @@ export class CrawlService {
       owner_id: channel.owner_id,
       channel_id: channel.id,
       status: 'new',
-    }));
+    })));
     return {
       rows,
       meta: res.data.channel || {},

@@ -30,8 +30,6 @@ const ALLOWED_EXT = ['.mp4', '.mov', '.m4v', '.webm', '.mkv'];
  */
 const PVID_RE = /^up_[0-9a-f]{24}$/;
 
-/** Link ảnh bìa nằm thẳng trong cột cover_url và được render bằng <img src>, nên phải sống lâu. */
-const COVER_TTL_SEC = Number(process.env.COVER_URL_TTL_SEC || 10 * 365 * 24 * 3600);
 const UPLOAD_TTL_SEC = Number(process.env.UPLOAD_URL_TTL_SEC || 6 * 3600);
 
 /**
@@ -159,12 +157,8 @@ export class SourceUploadController {
 
     let coverUrl: string | null = null;
     if (body?.has_cover && (await this.storage.statObject(coverKey))) {
-      coverUrl = await this.storage.signDownload(
-        coverKey,
-        COVER_TTL_SEC,
-        'image/jpeg',
-        true, // link tương đối, dùng được cả ở localhost lẫn domain tunnel
-      );
+      // link tương đối, dùng được cả ở localhost lẫn domain tunnel
+      coverUrl = await this.storage.signCoverUrl(coverKey);
     }
 
     const duration = Number(body?.duration);

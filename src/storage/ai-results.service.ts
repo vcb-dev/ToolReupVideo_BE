@@ -3,6 +3,7 @@ import { Interval } from '@nestjs/schedule';
 import axios from 'axios';
 import { CRON_ENABLED } from '../cron-guard';
 import { PrismaService } from '../prisma/prisma.service';
+import { StorageService } from './storage.service';
 import { upsertProcessed } from '../publish/processed-upsert';
 
 const AI_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5002';
@@ -27,7 +28,10 @@ export class AiResultsService {
   /** Chỉ cảnh báo 1 lần khi AI không gọi được, tránh spam log mỗi 10 giây. */
   private warnedUnreachable = false;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
+  ) {}
 
   @Interval('drain-ai-results', DRAIN_MS)
   async drain(): Promise<void> {
@@ -86,17 +90,20 @@ export class AiResultsService {
    */
   async saveSourceVideos(ownerId: string, videos: any[]): Promise<number> {
     if (!ownerId || !videos?.length) return 0;
-    const rows = videos.map((v) => ({
+    const rows = await Promise.all(videos.map(async (v) => ({
       platform: v.platform,
       platform_video_id: v.platform_video_id,
       descr: v.descr,
-      cover_url: v.cover_url,
+      // Ảnh bìa AI đã tải về kho -> link nội bộ; thiếu thì lui về link CDN gốc.
+      cover_url: v.cover_key
+        ? await this.storage.signCoverUrl(v.cover_key)
+        : v.cover_url,
       original_url: v.original_url,
       drive_id: v.drive_id,
       topic: v.topic ?? null,
       owner_id: ownerId,
       status: 'new' as const,
-    }));
+    })));
     const res = await this.prisma.source_videos.createMany({
       data: rows,
       skipDuplicates: true,
