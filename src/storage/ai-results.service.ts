@@ -54,6 +54,10 @@ export class AiResultsService {
           } else if (b.kind === 'processed') {
             const n = await this.saveProcessedVideos(b.owner_id, b.records);
             this.logger.log(`Ghi ${n} processed_videos từ AI.`);
+          } else if (b.kind === 'usage') {
+            // Vài giây một mẻ khi đang chạy job -> debug, không làm ngập log.
+            const n = await this.saveUsage(b.records);
+            this.logger.debug(`Ghi ${n} lượt dùng API từ AI.`);
           } else {
             // kind lạ -> vẫn ack để hàng đợi không bị kẹt mãi.
             this.logger.warn(`Bỏ qua mẻ kind lạ: ${b.kind}`);
@@ -82,6 +86,33 @@ export class AiResultsService {
     } finally {
       this.draining = false;
     }
+  }
+
+  /**
+   * Ghi lượt gọi API tính tiền (TikHub/Gemini/DeepSeek) cho khối "Chi phí API".
+   * Idempotent nhờ `id` do AI sinh + skipDuplicates (BE chạy 2 tiến trình cùng
+   * hút một mẻ vẫn không trùng).
+   */
+  async saveUsage(records: any[]): Promise<number> {
+    if (!records?.length) return 0;
+    const res = await this.prisma.api_usage.createMany({
+      data: records.map((r) => ({
+        id: String(r.id),
+        created_at: r.created_at ? new Date(r.created_at) : undefined,
+        provider: String(r.provider || 'unknown'),
+        op: String(r.op || 'other'),
+        label: String(r.label || r.op || 'Khác'),
+        model: r.model ?? null,
+        owner_id: r.owner_id ?? null,
+        requests: Number(r.requests) || 1,
+        input_tokens: Number(r.input_tokens) || 0,
+        output_tokens: Number(r.output_tokens) || 0,
+        images: Number(r.images) || 0,
+        cost_usd: r.cost_usd ?? null,
+      })),
+      skipDuplicates: true,
+    });
+    return res.count;
   }
 
   /**
