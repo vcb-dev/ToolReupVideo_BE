@@ -9,6 +9,7 @@ import { StorageService } from '../storage/storage.service';
  *
  *  - frame_asset_id / music_asset_id / logo_asset_id -> frame_url / music_url / logo_url
  *  - voice_asset_id -> voice_ref_url + voice_id "asset:<uuid>"
+ *  - giọng phụ "asset:<uuid>" trong voice_pool/voice_male/voice_female -> voice_refs
  */
 @Injectable()
 export class MediaResolveService {
@@ -66,6 +67,31 @@ export class MediaResolveService {
         c.voice_id = `asset:${va.id}`;
       }
       delete c.voice_asset_id;
+    }
+    // Giọng PHỤ (đa giọng) cũng có thể là clone trong Kho: "asset:<uuid>" nằm
+    // trong voice_pool / voice_male / voice_female. Mỗi cái cần file mẫu riêng
+    // như giọng chính, nếu không sidecar báo "chưa đăng ký" ở từng câu.
+    // -> voice_refs { "asset:<uuid>": URL ký sẵn }. Id lạ/không thuộc owner thì
+    // bỏ qua, AI tự loại giọng đó khỏi pool.
+    const poolIds = [
+      ...(Array.isArray(c.voice_pool) ? c.voice_pool : []),
+      c.voice_male,
+      c.voice_female,
+    ]
+      .map((v) => String(v || ''))
+      .filter((v) => v.startsWith('asset:'))
+      .map((v) => v.slice(6));
+    if (poolIds.length > 0) {
+      const assets = await this.prisma.media_assets.findMany({
+        where: { id: { in: [...new Set(poolIds)] }, owner_id: ownerId, kind: 'voice' },
+      });
+      const refs: Record<string, string> = {};
+      for (const a of assets) {
+        if (a.drive_id) {
+          refs[`asset:${a.id}`] = await this.storage.signDownload(a.drive_id, 3600);
+        }
+      }
+      c.voice_refs = refs;
     }
     return c;
   }
